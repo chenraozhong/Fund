@@ -28,4 +28,32 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
+    asset TEXT NOT NULL,
+    buy_date TEXT NOT NULL,
+    buy_shares REAL NOT NULL,
+    buy_price REAL NOT NULL,
+    sell_date TEXT NOT NULL,
+    sell_shares REAL NOT NULL,
+    sell_price REAL NOT NULL,
+    paired_shares REAL NOT NULL,
+    profit REAL NOT NULL,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
+// Migrations
+const migrations = [
+  'ALTER TABLE funds ADD COLUMN market_nav REAL DEFAULT 0',
+  'ALTER TABLE funds ADD COLUMN stop_profit_pct REAL DEFAULT 5',
+  'ALTER TABLE funds ADD COLUMN stop_loss_pct REAL DEFAULT 5',
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch (_) { /* column already exists */ }
+}
+
 export default db;

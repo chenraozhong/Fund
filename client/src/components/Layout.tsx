@@ -1,10 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
 
 const links = [
-  { to: '/', label: 'Dashboard' },
-  { to: '/performance', label: 'Performance' },
-  { to: '/transactions', label: 'Transactions' },
-  { to: '/funds', label: 'Funds' },
+  { to: '/', label: '总览' },
+  { to: '/performance', label: '业绩走势' },
+  { to: '/transactions', label: '交易记录' },
+  { to: '/funds', label: '基金管理' },
+  { to: '/import', label: '批量导入' },
+  { to: '/backups', label: '数据备份' },
 ]
 
 export default function Layout() {
@@ -13,7 +15,7 @@ export default function Layout() {
       <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <span className="text-xl font-bold text-gray-900">Portfolio Tracker</span>
+            <span className="text-xl font-bold text-gray-900">投资组合管理</span>
             <div className="flex gap-1">
               {links.map(l => (
                 <NavLink

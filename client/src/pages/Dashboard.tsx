@@ -4,7 +4,7 @@ import { api } from '../api'
 import type { Summary, Allocation, Fund } from '../api'
 
 function fmt(n: number) {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+  return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
 export default function Dashboard() {
@@ -18,15 +18,15 @@ export default function Dashboard() {
     api.getFunds().then(setFunds)
   }, [])
 
-  if (!summary) return <div className="text-center py-12 text-gray-500">Loading...</div>
+  if (!summary) return <div className="text-center py-12 text-gray-500">加载中...</div>
 
   if (summary.fund_count === 0) {
     return (
       <div className="text-center py-20">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Welcome to Portfolio Tracker</h2>
-        <p className="text-gray-500 mb-6">Get started by creating your first fund.</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">欢迎使用投资组合管理</h2>
+        <p className="text-gray-500 mb-6">创建你的第一个基金，开始追踪投资吧。</p>
         <a href="/funds" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-          Create Fund
+          创建基金
         </a>
       </div>
     )
@@ -34,22 +34,22 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+      <h1 className="text-2xl font-bold text-gray-900">总览</h1>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Total Value" value={fmt(summary.total_value)} />
-        <StatCard label="Total Invested" value={fmt(summary.total_cost)} />
+        <StatCard label="总市值" value={fmt(summary.total_value)} />
+        <StatCard label="总投入" value={fmt(summary.total_cost)} />
         <StatCard
-          label="Gain/Loss"
+          label="盈亏"
           value={`${fmt(summary.gain)} (${summary.gain_pct.toFixed(1)}%)`}
           color={summary.gain >= 0 ? 'text-green-600' : 'text-red-600'}
         />
-        <StatCard label="Funds" value={String(summary.fund_count)} />
+        <StatCard label="基金数" value={String(summary.fund_count)} />
       </div>
 
       <div className="grid md:grid-cols-2 gap-8">
         <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Allocation</h2>
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">资产配置</h2>
           {allocation.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
@@ -62,12 +62,12 @@ export default function Dashboard() {
               </PieChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-gray-400 text-center py-8">No allocation data yet.</p>
+            <p className="text-gray-400 text-center py-8">暂无配置数据。</p>
           )}
         </div>
 
         <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Funds</h2>
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">基金列表</h2>
           <div className="space-y-3">
             {funds.map(f => (
               <div key={f.id} className="flex items-center justify-between p-3 rounded-md bg-gray-50">

@@ -4,10 +4,20 @@ import type { Transaction, Fund } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 function fmt(n: number) {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+  return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
+}
+
+function formatDate(d: string) {
+  return new Date(d + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '' }
+
+const typeConfig = {
+  buy:      { label: '买入',  bg: 'bg-emerald-50',  text: 'text-emerald-700', border: 'border-emerald-200', icon: '↑' },
+  sell:     { label: '卖出',  bg: 'bg-red-50',      text: 'text-red-700',     border: 'border-red-200',     icon: '↓' },
+  dividend: { label: '分红',  bg: 'bg-amber-50',    text: 'text-amber-700',   border: 'border-amber-200',   icon: '$' },
+}
 
 export default function Transactions() {
   const [txs, setTxs] = useState<Transaction[]>([])
@@ -34,11 +44,13 @@ export default function Transactions() {
   useEffect(() => { api.getFunds().then(setFunds) }, [])
   useEffect(load, [filterFund, filterType, filterFrom, filterTo])
 
+  const totalAmount = txs.reduce((s, tx) => s + (tx.type === 'dividend' ? tx.price : tx.shares * tx.price), 0)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     if (!form.fund_id || !form.date || !form.asset) {
-      setError('Fund, date, and asset are required.')
+      setError('请选择基金、日期和资产。')
       return
     }
     try {
@@ -60,6 +72,7 @@ export default function Transactions() {
     setForm({ fund_id: tx.fund_id, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '' })
     setEditId(tx.id)
     setShowForm(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleDelete = async () => {
@@ -70,131 +83,239 @@ export default function Transactions() {
     }
   }
 
+  const hasFilters = filterFund || filterType || filterFrom || filterTo
+  const clearFilters = () => { setFilterFund(''); setFilterType(''); setFilterFrom(''); setFilterTo('') }
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Transactions</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">交易记录</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            共 {txs.length} 条记录 &middot; 总金额 {fmt(totalAmount)}
+          </p>
+        </div>
         <button
           onClick={() => { setShowForm(true); setEditId(null); setForm(emptyForm) }}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors"
         >
-          Add Transaction
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+          添加交易
         </button>
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <select value={filterFund} onChange={e => setFilterFund(e.target.value)} className="border rounded-md px-3 py-1.5 text-sm bg-white">
-          <option value="">All Funds</option>
-          {funds.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
-        <select value={filterType} onChange={e => setFilterType(e.target.value)} className="border rounded-md px-3 py-1.5 text-sm bg-white">
-          <option value="">All Types</option>
-          <option value="buy">Buy</option>
-          <option value="sell">Sell</option>
-          <option value="dividend">Dividend</option>
-        </select>
-        <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} className="border rounded-md px-3 py-1.5 text-sm" placeholder="From" />
-        <input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} className="border rounded-md px-3 py-1.5 text-sm" placeholder="To" />
+      {/* Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
+          <span className="text-sm font-medium text-gray-700">筛选</span>
+          {hasFilters && (
+            <button onClick={clearFilters} className="ml-auto text-xs text-blue-600 hover:text-blue-800 font-medium">
+              清除全部
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <select value={filterFund} onChange={e => setFilterFund(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+            <option value="">全部基金</option>
+            {funds.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <select value={filterType} onChange={e => setFilterType(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+            <option value="">全部类型</option>
+            <option value="buy">买入</option>
+            <option value="sell">卖出</option>
+            <option value="dividend">分红</option>
+          </select>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-500">起始</label>
+            <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-500">截止</label>
+            <input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+          </div>
+        </div>
       </div>
 
+      {/* Form */}
       {showForm && (
-        <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow p-6 space-y-4">
-          <h2 className="text-lg font-semibold">{editId ? 'Edit' : 'Add'} Transaction</h2>
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <select value={form.fund_id} onChange={e => setForm({ ...form, fund_id: Number(e.target.value) })} className="border rounded-md px-3 py-2 text-sm" required>
-              <option value={0}>Select Fund</option>
-              {funds.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
-            <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="border rounded-md px-3 py-2 text-sm" required />
-            <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value as any })} className="border rounded-md px-3 py-2 text-sm">
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-              <option value="dividend">Dividend</option>
-            </select>
-            <input value={form.asset} onChange={e => setForm({ ...form, asset: e.target.value })} placeholder="Asset / Ticker" className="border rounded-md px-3 py-2 text-sm" required />
+        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-blue-200 shadow-sm p-6 space-y-5 ring-1 ring-blue-100">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900">{editId ? '编辑' : '新增'}交易</h2>
+            <button type="button" onClick={() => { setShowForm(false); setEditId(null) }} className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
+              {error}
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">基金</label>
+              <select value={form.fund_id} onChange={e => setForm({ ...form, fund_id: Number(e.target.value) })} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required>
+                <option value={0}>选择基金</option>
+                {funds.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">日期</label>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">类型</label>
+              <div className="flex gap-1.5">
+                {(['buy', 'sell', 'dividend'] as const).map(t => {
+                  const cfg = typeConfig[t]
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setForm({ ...form, type: t })}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        form.type === t
+                          ? `${cfg.bg} ${cfg.text} ${cfg.border}`
+                          : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      {cfg.icon} {cfg.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">资产 / 代码</label>
+              <input value={form.asset} onChange={e => setForm({ ...form, asset: e.target.value.toUpperCase() })} placeholder="例如 VTI" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+            </div>
             {form.type !== 'dividend' ? (
               <>
-                <input type="number" step="any" value={form.shares || ''} onChange={e => setForm({ ...form, shares: Number(e.target.value) })} placeholder="Shares" className="border rounded-md px-3 py-2 text-sm" />
-                <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="Price per share" className="border rounded-md px-3 py-2 text-sm" />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">份额</label>
+                  <input type="number" step="any" value={form.shares || ''} onChange={e => setForm({ ...form, shares: Number(e.target.value) })} placeholder="0" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">单价</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
+                    <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                  </div>
+                </div>
               </>
             ) : (
-              <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="Amount" className="border rounded-md px-3 py-2 text-sm" />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">金额</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
+                  <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                </div>
+              </div>
             )}
-            <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Notes" className="border rounded-md px-3 py-2 text-sm col-span-2 md:col-span-3" />
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">备注（可选）</label>
+              <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="添加备注..." className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+            </div>
           </div>
-          <div className="flex gap-3">
-            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm">
-              {editId ? 'Update' : 'Add'}
+
+          {/* Live preview */}
+          {form.fund_id > 0 && form.asset && (
+            <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
+              预览：<strong>{typeConfig[form.type].label}</strong> {form.type !== 'dividend' && <>{form.shares || 0} 份</>} <strong className="font-mono">{form.asset || '...'}</strong>
+              {form.type !== 'dividend'
+                ? <> 单价 {fmt(form.price || 0)} = <strong>{fmt((form.shares || 0) * (form.price || 0))}</strong></>
+                : <> 金额 <strong>{fmt(form.price || 0)}</strong></>
+              }
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">
+              {editId ? '更新交易' : '添加交易'}
             </button>
-            <button type="button" onClick={() => { setShowForm(false); setEditId(null) }} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 text-sm">
-              Cancel
+            <button type="button" onClick={() => { setShowForm(false); setEditId(null) }} className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors">
+              取消
             </button>
           </div>
         </form>
       )}
 
+      {/* Transaction List */}
       {txs.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          No transactions found. Add one to get started.
+        <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
+          <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
+            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" /></svg>
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">暂无交易记录</h3>
+          <p className="text-gray-500 text-sm">
+            {hasFilters ? '试试调整筛选条件。' : '添加第一条交易记录开始使用吧。'}
+          </p>
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-gray-600">
-              <tr>
-                <th className="text-left px-4 py-3">Date</th>
-                <th className="text-left px-4 py-3">Fund</th>
-                <th className="text-left px-4 py-3">Type</th>
-                <th className="text-left px-4 py-3">Asset</th>
-                <th className="text-right px-4 py-3">Shares</th>
-                <th className="text-right px-4 py-3">Price</th>
-                <th className="text-right px-4 py-3">Total</th>
-                <th className="text-left px-4 py-3">Notes</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {txs.map(tx => (
-                <tr key={tx.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">{tx.date}</td>
-                  <td className="px-4 py-3">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: tx.fund_color }} />
-                      {tx.fund_name}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      tx.type === 'buy' ? 'bg-green-100 text-green-700' :
-                      tx.type === 'sell' ? 'bg-red-100 text-red-700' :
-                      'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {tx.type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-medium">{tx.asset}</td>
-                  <td className="px-4 py-3 text-right">{tx.type === 'dividend' ? '—' : tx.shares}</td>
-                  <td className="px-4 py-3 text-right">{tx.type === 'dividend' ? fmt(tx.price) : fmt(tx.price)}</td>
-                  <td className="px-4 py-3 text-right font-medium">{tx.type === 'dividend' ? fmt(tx.price) : fmt(tx.shares * tx.price)}</td>
-                  <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{tx.notes}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => startEdit(tx)} className="text-blue-600 hover:text-blue-800 text-xs">Edit</button>
-                      <button onClick={() => setDeleteId(tx.id)} className="text-red-600 hover:text-red-800 text-xs">Delete</button>
+        <div className="space-y-3">
+          {txs.map(tx => {
+            const cfg = typeConfig[tx.type]
+            const total = tx.type === 'dividend' ? tx.price : tx.shares * tx.price
+            return (
+              <div key={tx.id} className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow p-4">
+                <div className="flex items-center gap-4">
+                  {/* Type icon */}
+                  <div className={`w-10 h-10 rounded-lg ${cfg.bg} ${cfg.text} flex items-center justify-center text-lg font-bold shrink-0`}>
+                    {cfg.icon}
+                  </div>
+
+                  {/* Main info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-gray-900 font-mono">{tx.asset}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
+                        {cfg.label}
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tx.fund_color }} />
+                        {tx.fund_name}
+                      </span>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
+                      <span>{formatDate(tx.date)}</span>
+                      {tx.type !== 'dividend' && (
+                        <span>{tx.shares} 份 @ {fmt(tx.price)}</span>
+                      )}
+                      {tx.notes && (
+                        <span className="truncate max-w-[200px] text-gray-400" title={tx.notes}>&middot; {tx.notes}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Amount */}
+                  <div className="text-right shrink-0">
+                    <div className={`text-lg font-bold ${tx.type === 'sell' ? 'text-red-600' : 'text-gray-900'}`}>
+                      {tx.type === 'sell' ? '-' : ''}{fmt(total)}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-1 shrink-0">
+                    <button onClick={() => startEdit(tx)} className="p-2 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="编辑">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                    </button>
+                    <button onClick={() => setDeleteId(tx.id)} className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="删除">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
       <ConfirmDialog
         open={deleteId !== null}
-        title="Delete Transaction"
-        message="Are you sure you want to delete this transaction? This cannot be undone."
+        title="删除交易"
+        message="确定要删除这条交易记录吗？此操作不可撤销。"
         onConfirm={handleDelete}
         onCancel={() => setDeleteId(null)}
       />

@@ -89,4 +89,152 @@ router.delete('/:id', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
+// Split a transaction into two
+router.post('/:id/split', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { shares: splitShares } = req.body as { shares: number };
+
+  if (!splitShares || splitShares <= 0) {
+    res.status(400).json({ error: '拆分份额必须大于 0' });
+    return;
+  }
+
+  const tx = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id) as any;
+  if (!tx) {
+    res.status(404).json({ error: 'Transaction not found' });
+    return;
+  }
+
+  if (tx.type === 'dividend') {
+    // For dividends, split by amount (price field stores the amount)
+    if (splitShares >= tx.price) {
+      res.status(400).json({ error: `拆分金额必须小于原金额 ${tx.price}` });
+      return;
+    }
+    const remaining = Math.round((tx.price - splitShares) * 10000) / 10000;
+
+    const result = db.transaction(() => {
+      // Update original: reduce amount
+      db.prepare('UPDATE transactions SET price = ? WHERE id = ?').run(remaining, id);
+
+      // Create new transaction with split amount
+      const ins = db.prepare(
+        'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(tx.fund_id, tx.date, tx.type, tx.asset, 0, splitShares, `从交易#${id}拆分`);
+
+      return {
+        original: db.prepare('SELECT t.*, f.name as fund_name, f.color as fund_color FROM transactions t JOIN funds f ON f.id = t.fund_id WHERE t.id = ?').get(id),
+        split: db.prepare('SELECT t.*, f.name as fund_name, f.color as fund_color FROM transactions t JOIN funds f ON f.id = t.fund_id WHERE t.id = ?').get(ins.lastInsertRowid),
+      };
+    })();
+
+    res.json(result);
+    return;
+  }
+
+  // For buy/sell, split by shares
+  if (splitShares >= tx.shares) {
+    res.status(400).json({ error: `拆分份额必须小于原份额 ${tx.shares}` });
+    return;
+  }
+
+  const remainingShares = Math.round((tx.shares - splitShares) * 10000) / 10000;
+
+  const result = db.transaction(() => {
+    // Update original: reduce shares
+    db.prepare('UPDATE transactions SET shares = ? WHERE id = ?').run(remainingShares, id);
+
+    // Create new transaction with split shares, same price
+    const ins = db.prepare(
+      'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(tx.fund_id, tx.date, tx.type, tx.asset, splitShares, tx.price, `从交易#${id}拆分`);
+
+    return {
+      original: db.prepare('SELECT t.*, f.name as fund_name, f.color as fund_color FROM transactions t JOIN funds f ON f.id = t.fund_id WHERE t.id = ?').get(id),
+      split: db.prepare('SELECT t.*, f.name as fund_name, f.color as fund_color FROM transactions t JOIN funds f ON f.id = t.fund_id WHERE t.id = ?').get(ins.lastInsertRowid),
+    };
+  })();
+
+  res.json(result);
+});
+
+// Merge multiple transactions of the same asset into one
+router.post('/merge', (req: Request, res: Response) => {
+  const { ids } = req.body as { ids: number[] };
+  if (!ids || ids.length < 2) {
+    res.status(400).json({ error: 'At least 2 transaction IDs are required' });
+    return;
+  }
+
+  const placeholders = ids.map(() => '?').join(',');
+  const txs = db.prepare(`
+    SELECT * FROM transactions WHERE id IN (${placeholders})
+  `).all(...ids) as any[];
+
+  if (txs.length !== ids.length) {
+    res.status(404).json({ error: 'Some transactions not found' });
+    return;
+  }
+
+  // All must belong to the same fund and same asset and same type
+  const fundIds = new Set(txs.map(t => t.fund_id));
+  const assets = new Set(txs.map(t => t.asset));
+  const types = new Set(txs.map(t => t.type));
+
+  if (fundIds.size > 1) {
+    res.status(400).json({ error: 'All transactions must belong to the same fund' });
+    return;
+  }
+  if (assets.size > 1) {
+    res.status(400).json({ error: 'All transactions must be for the same asset' });
+    return;
+  }
+  if (types.size > 1) {
+    res.status(400).json({ error: 'All transactions must be the same type' });
+    return;
+  }
+
+  const type = txs[0].type;
+  const fund_id = txs[0].fund_id;
+  const asset = txs[0].asset;
+
+  let totalShares = 0;
+  let totalCost = 0;
+  let latestDate = txs[0].date;
+
+  for (const tx of txs) {
+    if (type === 'dividend') {
+      totalCost += tx.price;
+    } else {
+      totalShares += tx.shares;
+      totalCost += tx.shares * tx.price;
+    }
+    if (tx.date > latestDate) latestDate = tx.date;
+  }
+
+  // Weighted average price
+  const avgPrice = type === 'dividend' ? totalCost : (totalShares > 0 ? totalCost / totalShares : 0);
+
+  const mergeNotes = `Merged from ${txs.length} transactions`;
+
+  const merge = db.transaction(() => {
+    // Delete old transactions
+    db.prepare(`DELETE FROM transactions WHERE id IN (${placeholders})`).run(...ids);
+
+    // Insert merged transaction
+    const result = db.prepare(
+      'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(fund_id, latestDate, type, asset, totalShares, avgPrice, mergeNotes);
+
+    return db.prepare(`
+      SELECT t.*, f.name as fund_name, f.color as fund_color
+      FROM transactions t JOIN funds f ON f.id = t.fund_id
+      WHERE t.id = ?
+    `).get(result.lastInsertRowid);
+  });
+
+  const merged = merge();
+  res.json(merged);
+});
+
 export default router;

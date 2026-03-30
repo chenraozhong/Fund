@@ -2,11 +2,13 @@ interface Props {
   open: boolean
   title: string
   message: string
+  confirmText?: string
+  confirmColor?: string
   onConfirm: () => void
   onCancel: () => void
 }
 
-export default function ConfirmDialog({ open, title, message, onConfirm, onCancel }: Props) {
+export default function ConfirmDialog({ open, title, message, confirmText = '删除', confirmColor = 'bg-red-600 hover:bg-red-700', onConfirm, onCancel }: Props) {
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
@@ -15,10 +17,10 @@ export default function ConfirmDialog({ open, title, message, onConfirm, onCance
         <p className="text-gray-600 mb-6">{message}</p>
         <div className="flex justify-end gap-3">
           <button onClick={onCancel} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200">
-            Cancel
+            取消
           </button>
-          <button onClick={onConfirm} className="px-4 py-2 text-sm text-white bg-red-600 rounded-md hover:bg-red-700">
-            Delete
+          <button onClick={onConfirm} className={`px-4 py-2 text-sm text-white rounded-md ${confirmColor}`}>
+            {confirmText}
           </button>
         </div>
       </div>

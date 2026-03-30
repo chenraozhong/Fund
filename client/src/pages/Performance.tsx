@@ -4,7 +4,7 @@ import { api } from '../api'
 import type { PerformanceData } from '../api'
 
 function fmt(n: number) {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+  return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
 export default function Performance() {
@@ -14,27 +14,27 @@ export default function Performance() {
     api.getPerformance().then(setPerf)
   }, [])
 
-  if (!perf) return <div className="text-center py-12 text-gray-500">Loading...</div>
+  if (!perf) return <div className="text-center py-12 text-gray-500">加载中...</div>
 
   if (perf.funds.length === 0) {
     return (
       <div className="text-center py-20">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">No Performance Data</h2>
-        <p className="text-gray-500">Create funds and add transactions to see performance charts.</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">暂无业绩数据</h2>
+        <p className="text-gray-500">创建基金并添加交易后即可查看业绩走势图。</p>
       </div>
     )
   }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Performance (12 Months)</h1>
+      <h1 className="text-2xl font-bold text-gray-900">业绩走势（近12个月）</h1>
 
       <div className="bg-white rounded-lg shadow p-6">
         <ResponsiveContainer width="100%" height={400}>
           <LineChart data={perf.data}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-            <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+            <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `¥${(v / 1000).toFixed(0)}k`} />
             <Tooltip formatter={(value: number) => fmt(value)} />
             {perf.funds.map(f => (
               <Line
