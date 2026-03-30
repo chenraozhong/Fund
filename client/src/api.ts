@@ -1,15 +1,34 @@
 const BASE = '/api';
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(BASE + url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || res.statusText);
+      }
+      return res.json();
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on network errors (server restarting), not on 4xx/5xx
+      if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('fetch')) {
+        throw err;
+      }
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY * (attempt + 1)));
+      }
+    }
   }
-  return res.json();
+
+  throw lastError || new Error('请求失败');
 }
 
 export interface Fund {
@@ -145,12 +164,14 @@ export const api = {
     request<{ original: Transaction; split: Transaction }>(`/transactions/${id}/split`, { method: 'POST', body: JSON.stringify({ shares }) }),
 
   getTrades: (fundId: number) => request<Trade[]>(`/trades/funds/${fundId}`),
-  createTrade: (buyTxId: number, sellTxId: number) =>
-    request<Trade>('/trades', { method: 'POST', body: JSON.stringify({ buyTxId, sellTxId }) }),
+  createTrade: (buyTxIds: number[], sellTxIds: number[]) =>
+    request<Trade>('/trades', { method: 'POST', body: JSON.stringify({ buyTxIds, sellTxIds }) }),
   deleteTrade: (id: number) =>
     request<void>(`/trades/${id}`, { method: 'DELETE' }),
 
   getFundDetail: (id: number) => request<FundDetail>(`/funds/${id}/positions`),
+  adjustHolding: (id: number, target_shares: number, target_nav: number) =>
+    request<{ success: boolean }>(`/funds/${id}/adjust`, { method: 'POST', body: JSON.stringify({ target_shares, target_nav }) }),
   getFundAdvice: (id: number) => request<AiAdvice>(`/ai/funds/${id}/advice`),
 
   importPreview: (text: string) =>
