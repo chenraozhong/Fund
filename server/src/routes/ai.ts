@@ -105,7 +105,7 @@ router.get('/funds/:id/advice', async (req: Request, res: Response) => {
     return {
       asset: p.asset,
       holding_shares: Math.round(holdingShares * 100) / 100,
-      avg_cost: Math.round(avgCost * 100) / 100,
+      avg_cost: Math.round(avgCost * 10000) / 10000,
       total_cost: Math.round(totalCost * 100) / 100,
       current_value: Math.round(currentValue * 100) / 100,
       gain: Math.round(gain * 100) / 100,
@@ -115,46 +115,97 @@ router.get('/funds/:id/advice', async (req: Request, res: Response) => {
 
   const totalCost = positionSummary.reduce((s, p) => s + p.total_cost, 0);
   const totalValue = positionSummary.reduce((s, p) => s + p.current_value, 0);
+  const holdingShares = positionSummary.reduce((s, p) => s + p.holding_shares, 0);
+  const costNav = holdingShares > 0 ? totalCost / holdingShares : 0;
+  const mNav = fund.market_nav || 0;
+  const marketValue = mNav > 0 ? holdingShares * mNav : totalValue;
+  const gain = marketValue - totalCost;
+  const gainPct = totalCost > 0 ? (gain / totalCost * 100) : 0;
 
-  const prompt = `你是一位专业的基金投资顾问。请根据以下基金持仓和交易数据，分析并给出明天涨跌两种情况下的操作建议。
+  // 获取近期净值趋势（如果有基金代码）
+  let navTrendText = '无历史净值数据（无基金代码）';
+  if (fund.code) {
+    try {
+      const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${fund.code}&pageIndex=1&pageSize=20&startDate=&endDate=`;
+      const navRes = await fetch(url, { headers: { 'Referer': 'https://fundf10.eastmoney.com/' } });
+      const navData = await navRes.json() as any;
+      if (navData.Data?.LSJZList?.length > 0) {
+        const navList = navData.Data.LSJZList.map((item: any) => ({
+          date: item.FSRQ,
+          nav: parseFloat(item.DWJZ),
+          change: item.JZZZL ? parseFloat(item.JZZZL) : null,
+        })).reverse();
+
+        const navValues = navList.map((n: any) => n.nav);
+        const ma5 = navValues.slice(-5).reduce((a: number, b: number) => a + b, 0) / Math.min(navValues.length, 5);
+        const ma10 = navValues.slice(-10).reduce((a: number, b: number) => a + b, 0) / Math.min(navValues.length, 10);
+        const latest = navValues[navValues.length - 1];
+        const change5d = navValues.length >= 6 ? ((latest - navValues[navValues.length - 6]) / navValues[navValues.length - 6] * 100) : 0;
+
+        navTrendText = `最新净值：${latest.toFixed(4)}
+MA5（5日均线）：${ma5.toFixed(4)} | MA10（10日均线）：${ma10.toFixed(4)}
+近5日涨跌：${change5d >= 0 ? '+' : ''}${change5d.toFixed(2)}%
+均线状态：${latest > ma5 && ma5 > ma10 ? '多头排列（上涨趋势）' : latest < ma5 && ma5 < ma10 ? '空头排列（下跌趋势）' : '交叉震荡'}
+近20日净值：
+${navList.slice(-10).map((n: any) => `  ${n.date}: ${n.nav.toFixed(4)}${n.change !== null ? ` (${n.change >= 0 ? '+' : ''}${n.change}%)` : ''}`).join('\n')}`;
+      }
+    } catch { /* 获取失败用默认文案 */ }
+  }
+
+  const prompt = `你是一位专业的中国基金投资顾问，擅长中国公募基金（包括ETF联接基金、指数基金、混合基金）的投资策略分析。
 
 ## 基金信息
-- 名称：${fund.name}
+- 名称：${fund.name}${fund.code ? `（代码：${fund.code}）` : ''}
+- 当前净值：${mNav > 0 ? `¥${mNav.toFixed(4)}` : '未设置'}
+- 持仓均价：¥${costNav.toFixed(4)}
+- 持有份额：${holdingShares.toFixed(2)} 份
 - 总成本：¥${totalCost.toFixed(2)}
-- 当前市值：¥${totalValue.toFixed(2)}
-- 盈亏：¥${(totalValue - totalCost).toFixed(2)}（${totalCost > 0 ? ((totalValue - totalCost) / totalCost * 100).toFixed(2) : 0}%）
+- 当前市值：¥${marketValue.toFixed(2)}
+- 浮动盈亏：¥${gain.toFixed(2)}（${gainPct.toFixed(2)}%）
+- 止盈线：${fund.stop_profit_pct || 5}% | 止损线：${fund.stop_loss_pct || 5}%
 
-## 当前持仓
+## 净值趋势
+${navTrendText}
+
+## 当前持仓明细
 ${positionSummary.length > 0
   ? positionSummary.map(p =>
-    `- ${p.asset}：持有 ${p.holding_shares} 份，均价 ¥${p.avg_cost}，成本 ¥${p.total_cost}，盈亏 ¥${p.gain}（${p.gain_pct}%）`
+    `- ${p.asset}：${p.holding_shares}份 × ¥${p.avg_cost} = ¥${p.total_cost}，盈亏 ¥${p.gain}（${p.gain_pct}%）`
   ).join('\n')
   : '暂无持仓'}
 
 ## 最近交易记录
 ${recentTxs.length > 0
-  ? recentTxs.map(tx => {
+  ? recentTxs.slice(0, 15).map(tx => {
     const typeLabel = tx.type === 'buy' ? '买入' : tx.type === 'sell' ? '卖出' : '分红';
-    const amount = tx.type === 'dividend' ? `¥${tx.price}` : `${tx.shares}份 × ¥${tx.price}`;
-    return `- ${tx.date} ${typeLabel} ${tx.asset} ${amount}${tx.notes ? '（' + tx.notes + '）' : ''}`;
+    const amount = tx.type === 'dividend' ? `¥${tx.price}` : `${tx.shares}份 × ¥${tx.price} = ¥${(tx.shares * tx.price).toFixed(2)}`;
+    return `- ${tx.date} ${typeLabel} ${amount}${tx.notes ? '（' + tx.notes + '）' : ''}`;
   }).join('\n')
   : '暂无交易记录'}
 
-请给出以下分析（使用中文回答）：
+请按以下结构给出**明天的具体操作建议**（中文回答，简洁实用）：
 
-### 1. 持仓评估
-简要评估当前持仓结构和风险。
+### 持仓诊断
+- 用1-2句话评估当前持仓状态（是否健康、风险点在哪）
+- 判断当前是盈利兑现期、成本摊低期、还是正常持有期
 
-### 2. 如果明天上涨
-分析在上涨情况下，每个持仓应该如何操作（持有/加仓/减仓/止盈），给出具体建议和理由。
+### 明日如果上涨（+1%~+3%）
+- **具体操作**：持有/减仓/止盈？操作多少份额或金额？
+- **理由**：基于净值趋势和盈亏状态说明
 
-### 3. 如果明天下跌
-分析在下跌情况下，每个持仓应该如何操作（持有/加仓/补仓/止损），给出具体建议和理由。
+### 明日如果下跌（-1%~-3%）
+- **具体操作**：持有/加仓/补仓/止损？操作多少份额或金额？
+- **理由**：什么价位适合加仓？加仓多少合适？
 
-### 4. 总结建议
-给出一句话核心建议。
+### 本周操作要点
+- 给出2-3条具体的操作要点（含价位、金额）
+- 如有定投建议，给出具体金额和频率
 
-注意：请基于数据给出务实的建议，不要过度推测市场走向。如果数据不足以做出判断，请如实说明。`;
+要求：
+1. 建议必须具体到金额或份额，不要空话
+2. 结合净值均线趋势判断，不要只看盈亏
+3. 风险提示要具体（比如"距止损线还有X%"而不是"注意风险"）
+4. 如果数据不足，如实说明并给出保守建议`;
 
   if (!AI_KEY) {
     res.status(500).json({ error: '未配置 ANTHROPIC_API_KEY 环境变量，无法使用 AI 功能。' });

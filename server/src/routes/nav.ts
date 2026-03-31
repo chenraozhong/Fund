@@ -18,8 +18,13 @@ router.post('/refresh-all', async (_req: Request, res: Response) => {
           const data = JSON.parse(json);
           const nav = parseFloat(data.dwjz);
           if (nav > 0) {
-            db.prepare('UPDATE funds SET market_nav = ? WHERE id = ?').run(nav, f.id);
-            results.push({ id: f.id, name: f.name, code: f.code, nav });
+            // 同时更新净值和基金名称（API返回的name是官方名称）
+            if (data.name) {
+              db.prepare('UPDATE funds SET market_nav = ?, name = ? WHERE id = ?').run(nav, data.name, f.id);
+            } else {
+              db.prepare('UPDATE funds SET market_nav = ? WHERE id = ?').run(nav, f.id);
+            }
+            results.push({ id: f.id, name: data.name || f.name, code: f.code, nav });
             continue;
           }
         }

@@ -4,25 +4,40 @@ import db from '../db';
 const router = Router();
 
 router.get('/summary', (_req: Request, res: Response) => {
-  const row = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0)
-        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0)
-        + COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_value,
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_cost,
-      COUNT(DISTINCT t.id) as tx_count
-    FROM transactions t
-  `).get() as any;
+  // 按基金逐个计算，与 funds GET / 逻辑一致
+  const funds = db.prepare(`
+    SELECT f.id, f.market_nav,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy,
+      COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0) as total_sell,
+      COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
+    FROM funds f
+    LEFT JOIN transactions t ON t.fund_id = f.id
+    GROUP BY f.id
+  `).all() as any[];
 
-  const fundCount = (db.prepare('SELECT COUNT(*) as count FROM funds').get() as any).count;
+  let totalValue = 0;
+  let totalCost = 0;
+  for (const f of funds) {
+    const costBasis = f.total_buy - f.total_sell + f.total_dividend;
+    const marketValue = f.market_nav > 0 && f.holding_shares > 0
+      ? f.holding_shares * f.market_nav
+      : costBasis;
+    totalValue += marketValue;
+    totalCost += costBasis;
+  }
+
+  const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions').get() as any).count;
+  const gain = totalValue - totalCost;
 
   res.json({
-    total_value: row.total_value,
-    total_cost: row.total_cost,
-    gain: row.total_value - row.total_cost,
-    gain_pct: row.total_cost > 0 ? ((row.total_value - row.total_cost) / row.total_cost) * 100 : 0,
-    fund_count: fundCount,
-    tx_count: row.tx_count,
+    total_value: Math.round(totalValue * 100) / 100,
+    total_cost: Math.round(totalCost * 100) / 100,
+    gain: Math.round(gain * 100) / 100,
+    gain_pct: totalCost > 0 ? Math.round((gain / totalCost) * 10000) / 100 : 0,
+    fund_count: funds.length,
+    tx_count: txCount,
   });
 });
 
@@ -62,18 +77,28 @@ router.get('/performance', (_req: Request, res: Response) => {
 
 router.get('/allocation', (_req: Request, res: Response) => {
   const funds = db.prepare(`
-    SELECT f.id, f.name, f.color,
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0)
-        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0)
-        + COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as value
+    SELECT f.id, f.name, f.color, f.market_nav,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy,
+      COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0) as total_sell,
+      COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
     FROM funds f
     LEFT JOIN transactions t ON t.fund_id = f.id
     GROUP BY f.id
   `).all() as any[];
 
-  const total = funds.reduce((s, f) => s + f.value, 0);
+  const computed = funds.map(f => {
+    const costBasis = f.total_buy - f.total_sell + f.total_dividend;
+    const value = f.market_nav > 0 && f.holding_shares > 0
+      ? f.holding_shares * f.market_nav
+      : costBasis;
+    return { id: f.id, name: f.name, color: f.color, value };
+  });
 
-  const result = funds.map(f => ({
+  const total = computed.reduce((s, f) => s + f.value, 0);
+
+  const result = computed.map(f => ({
     id: f.id,
     name: f.name,
     color: f.color,

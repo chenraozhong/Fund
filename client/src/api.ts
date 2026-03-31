@@ -155,6 +155,54 @@ export interface AiAdvice {
   total_value: number;
 }
 
+export interface StrategySignal {
+  source: string;
+  type: 'buy' | 'sell' | 'hold';
+  strength: number;
+  reason: string;
+}
+
+export interface StrategyResult {
+  fund: { id: number; name: string; code: string; market_nav: number };
+  position: {
+    holdingShares: number; costNav: number; totalCost: number;
+    marketValue: number; gain: number; gainPct: number;
+  };
+  technical: {
+    rsi14: number;
+    macd: { dif: number; dea: number; histogram: number };
+    bollingerBands: { upper: number; middle: number; lower: number; width: number; percentB: number };
+    atr14: number;
+    ma5: number; ma10: number; ma20: number; ma60: number;
+    trend: string; trendScore: number;
+    support: number; resistance: number;
+    volumeMomentum: number;
+  };
+  risk: {
+    maxDrawdown: number; maxDrawdownDays: number; currentDrawdown: number;
+    volatility20d: number; sharpeRatio: number; var95: number;
+    calmarRatio: number; winRate: number; profitLossRatio: number;
+  };
+  market: {
+    sector: string; sectorIndex: string;
+    marketIndices: { name: string; code: string; price: number; changePct: number; trend: string }[];
+    marketRegime: 'bull' | 'bear' | 'shock';
+    marketScore: number;
+  };
+  signals: StrategySignal[];
+  compositeScore: number;
+  advice: {
+    kellyPct: number; suggestedAction: string; suggestedAmount: number;
+    pyramidLevels: { nav: number; action: string; amount: number; reason: string }[];
+    holdingDays: number; costEfficiency: number;
+  };
+  summary: {
+    verdict: string; verdictColor: string; oneLiner: string; keyPoints: string[];
+  };
+  navHistory: { date: string; nav: number; change?: number }[];
+  timestamp: string;
+}
+
 export interface FundDetail {
   fund: { id: number; name: string; color: string; code: string; market_nav: number; stop_profit_pct: number; stop_loss_pct: number; created_at: string };
   positions: Position[];
@@ -197,6 +245,7 @@ export const api = {
   updateFundGain: (id: number, gain: number) =>
     request<{ success: boolean; gain: number; targetCost: number; targetNav: number }>(`/funds/${id}/gain`, { method: 'POST', body: JSON.stringify({ gain }) }),
   getFundAdvice: (id: number) => request<AiAdvice>(`/ai/funds/${id}/advice`),
+  getFundStrategy: (id: number) => request<StrategyResult>(`/strategy/funds/${id}`),
 
   importPreview: (text: string) =>
     request<{ funds: ImportPreview[] }>('/import/preview', { method: 'POST', body: JSON.stringify({ text }) }),

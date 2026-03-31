@@ -7,6 +7,10 @@ function fmt(n: number) {
   return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
+function fmtNav(n: number) {
+  return '¥' + n.toFixed(4)
+}
+
 const typeLabel: Record<string, string> = { buy: '买入', sell: '卖出', dividend: '分红' }
 
 const EXAMPLE = `基金名称：南方有色金属ETF联接E
@@ -191,8 +195,8 @@ export default function Import() {
                 </h3>
                 <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-600">
                   <span>持仓 <strong>{f.totalShares}</strong> 份</span>
-                  <span>当前净值 <strong>{fmt((f as any).marketNav || 0)}</strong></span>
-                  <span>持仓均价 <strong>{fmt(f.avgNav)}</strong> <span className="text-xs text-gray-400">(自动计算)</span></span>
+                  <span>当前净值 <strong>{fmtNav((f as any).marketNav || 0)}</strong></span>
+                  <span>持仓均价 <strong>{fmtNav(f.avgNav)}</strong> <span className="text-xs text-gray-400">(自动计算)</span></span>
                   <span className={f.gain >= 0 ? 'text-green-600' : 'text-red-600'}>
                     盈亏 <strong>{f.gain >= 0 ? '+' : ''}{fmt(f.gain)}</strong>
                   </span>
@@ -209,7 +213,7 @@ export default function Import() {
                       历史
                     </span>
                     <div className="flex-1 text-sm text-gray-700">
-                      历史持仓 <strong>{f.baseShares}</strong> 份 @ {fmt(f.basePrice)}
+                      历史持仓 <strong>{f.baseShares}</strong> 份 @ {fmtNav(f.basePrice)}
                     </div>
                     <div className="text-sm font-medium text-gray-900">
                       {fmt(f.baseShares * f.basePrice)}
@@ -230,7 +234,7 @@ export default function Import() {
                     <div className="flex-1 text-sm text-gray-700">
                       {tx.date}
                       {tx.type !== 'dividend'
-                        ? <> &middot; {tx.shares} 份 @ {fmt(tx.price)}</>
+                        ? <> &middot; {tx.shares} 份 @ {fmtNav(tx.price)}</>
                         : <> &middot; {fmt(tx.price)}</>
                       }
                     </div>

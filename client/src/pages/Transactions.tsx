@@ -7,6 +7,10 @@ function fmt(n: number) {
   return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
+function fmtNav(n: number) {
+  return '¥' + n.toFixed(4)
+}
+
 function formatDate(d: string) {
   return new Date(d + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' })
 }
@@ -333,7 +337,7 @@ export default function Transactions() {
                     <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
                       <span>{formatDate(tx.date)}</span>
                       {tx.type !== 'dividend' && (
-                        <span>{tx.shares} 份 @ {fmt(tx.price)}</span>
+                        <span>{tx.shares} 份 @ {fmtNav(tx.price)}</span>
                       )}
                       {tx.notes && (
                         <span className="truncate max-w-[200px] text-gray-400" title={tx.notes}>&middot; {tx.notes}</span>

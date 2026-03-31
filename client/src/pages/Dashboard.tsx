@@ -7,6 +7,10 @@ function fmt(n: number) {
   return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
+function fmtNav(n: number) {
+  return '¥' + n.toFixed(4)
+}
+
 export default function Dashboard() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [allocation, setAllocation] = useState<Allocation[]>([])
@@ -52,7 +56,7 @@ export default function Dashboard() {
 
   if (!summary) return <div className="text-center py-12 text-gray-500">加载中...</div>
 
-  if (summary.fund_count === 0) {
+  if (funds.length === 0) {
     return (
       <div className="text-center py-20">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">欢迎使用投资组合管理</h2>
@@ -63,6 +67,12 @@ export default function Dashboard() {
       </div>
     )
   }
+
+  // 从 funds 数据汇总（funds GET / 已正确使用 market_nav 计算）
+  const totalValue = funds.reduce((s, f) => s + f.current_value, 0)
+  const totalCost = funds.reduce((s, f) => s + f.total_cost, 0)
+  const totalGain = totalValue - totalCost
+  const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0
 
   return (
     <div className="space-y-8">
@@ -82,14 +92,15 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="总市值" value={fmt(summary.total_value)} />
-        <StatCard label="总投入" value={fmt(summary.total_cost)} />
+        <StatCard label="总市值" value={fmt(totalValue)} />
+        <StatCard label="持仓成本" value={fmt(totalCost)} />
         <StatCard
-          label="盈亏"
-          value={`${fmt(summary.gain)} (${summary.gain_pct.toFixed(1)}%)`}
-          color={summary.gain >= 0 ? 'text-green-600' : 'text-red-600'}
+          label="浮动盈亏"
+          value={`${totalGain >= 0 ? '+' : ''}${fmt(totalGain)}`}
+          sub={`${totalGainPct >= 0 ? '+' : ''}${totalGainPct.toFixed(2)}%`}
+          color={totalGain >= 0 ? 'text-green-600' : 'text-red-600'}
         />
-        <StatCard label="基金数" value={String(summary.fund_count)} />
+        <StatCard label="基金数" value={String(funds.length)} sub={`${summary.tx_count} 条交易`} />
       </div>
 
       <div className="grid md:grid-cols-2 gap-8">
@@ -162,11 +173,12 @@ export default function Dashboard() {
   )
 }
 
-function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
+function StatCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
     <div className="bg-white rounded-lg shadow p-4">
       <div className="text-sm text-gray-500">{label}</div>
       <div className={`text-xl font-bold mt-1 ${color || 'text-gray-900'}`}>{value}</div>
+      {sub && <div className={`text-xs mt-0.5 ${color || 'text-gray-400'}`}>{sub}</div>}
     </div>
   )
 }

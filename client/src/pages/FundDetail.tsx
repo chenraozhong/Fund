@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import type { FundDetail as FundDetailType, Position, Transaction, AiAdvice, Trade } from '../api'
+import type { FundDetail as FundDetailType, Position, Transaction, AiAdvice, Trade, StrategyResult } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 function fmt(n: number) {
@@ -77,6 +77,9 @@ export default function FundDetail() {
   const [navLoading, setNavLoading] = useState(false)
   const [navHint, setNavHint] = useState('')
   const [navUpdating, setNavUpdating] = useState(false)
+  const [strategy, setStrategy] = useState<StrategyResult | null>(null)
+  const [strategyLoading, setStrategyLoading] = useState(false)
+  const [strategyError, setStrategyError] = useState('')
 
   const load = () => {
     api.getFundDetail(fundId).then(d => {
@@ -86,6 +89,19 @@ export default function FundDetail() {
     api.getTrades(fundId).then(setTrades)
   }
   useEffect(() => { load() }, [fundId])
+
+  const fetchStrategy = async () => {
+    setStrategyLoading(true)
+    setStrategyError('')
+    try {
+      const result = await api.getFundStrategy(fundId)
+      setStrategy(result)
+    } catch (err: any) {
+      setStrategyError(err.message)
+    } finally {
+      setStrategyLoading(false)
+    }
+  }
 
   const fetchAdvice = async () => {
     setAdviceLoading(true)
@@ -611,6 +627,230 @@ export default function FundDetail() {
         )}
       </div>
 
+      {/* Local Strategy Engine */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center">
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">量化策略分析</h3>
+              <p className="text-xs text-gray-400">RSI / MACD / 布林带 / 波动率 / 大盘环境 / 综合评分</p>
+            </div>
+          </div>
+          <button onClick={fetchStrategy} disabled={strategyLoading}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg hover:bg-cyan-100 disabled:opacity-50 transition-colors">
+            {strategyLoading
+              ? <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>分析中...</>
+              : <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>{strategy ? '重新分析' : '开始分析'}</>}
+          </button>
+        </div>
+
+        {strategyError && <div className="px-5 py-3 bg-red-50 text-red-700 text-sm">{strategyError}</div>}
+
+        {strategy && (
+          <div className="divide-y divide-gray-100">
+            {/* 综合评分和判定 */}
+            <div className="px-5 py-4">
+              <div className="flex items-center gap-4 mb-2">
+                <div className="flex items-center gap-2">
+                  <span className={`text-2xl font-black ${strategy.summary.verdictColor}`}>{strategy.summary.verdict}</span>
+                  <span className={`text-3xl font-black tabular-nums ${strategy.compositeScore >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {strategy.compositeScore > 0 ? '+' : ''}{strategy.compositeScore}
+                  </span>
+                </div>
+                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${strategy.compositeScore >= 30 ? 'bg-emerald-500' : strategy.compositeScore >= 0 ? 'bg-blue-400' : strategy.compositeScore >= -30 ? 'bg-amber-400' : 'bg-red-500'}`}
+                    style={{ width: `${Math.max(5, (strategy.compositeScore + 100) / 2)}%` }} />
+                </div>
+              </div>
+              <p className="text-sm text-gray-600 mb-2">{strategy.summary.oneLiner}</p>
+              {strategy.advice.suggestedAmount > 0 && (
+                <div className="text-sm font-medium">
+                  <span className="text-gray-500">建议操作：</span>
+                  <span className={strategy.compositeScore >= 0 ? 'text-emerald-700' : 'text-red-700'}>{strategy.advice.suggestedAction}</span>
+                  <span className="text-gray-400 mx-1.5">|</span>
+                  <span className="text-gray-700">参考金额 {fmt(strategy.advice.suggestedAmount)}</span>
+                  <span className="text-gray-400 mx-1.5">|</span>
+                  <span className="text-gray-500">Kelly仓位 {strategy.advice.kellyPct}%</span>
+                </div>
+              )}
+            </div>
+
+            {/* 要点 */}
+            <div className="px-5 py-3 bg-gray-50/50">
+              <div className="space-y-1">
+                {strategy.summary.keyPoints.map((p, i) => (
+                  <p key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                    <span className="text-gray-400 shrink-0 mt-0.5">{'>'}</span>{p}
+                  </p>
+                ))}
+              </div>
+            </div>
+
+            {/* 技术指标面板 */}
+            <div className="px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">技术指标</h4>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">RSI(14)</div>
+                  <div className={`text-sm font-bold ${strategy.technical.rsi14 >= 70 ? 'text-red-600' : strategy.technical.rsi14 <= 30 ? 'text-green-600' : 'text-gray-900'}`}>
+                    {strategy.technical.rsi14.toFixed(1)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">{strategy.technical.rsi14 >= 70 ? '超买' : strategy.technical.rsi14 <= 30 ? '超卖' : '中性'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">MACD</div>
+                  <div className={`text-sm font-bold ${strategy.technical.macd.histogram >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {strategy.technical.macd.histogram >= 0 ? '+' : ''}{(strategy.technical.macd.histogram * 10000).toFixed(1)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">{strategy.technical.macd.dif > strategy.technical.macd.dea ? '金叉' : '死叉'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">布林%B</div>
+                  <div className={`text-sm font-bold ${strategy.technical.bollingerBands.percentB >= 80 ? 'text-red-600' : strategy.technical.bollingerBands.percentB <= 20 ? 'text-green-600' : 'text-gray-900'}`}>
+                    {strategy.technical.bollingerBands.percentB.toFixed(0)}%
+                  </div>
+                  <div className="text-[10px] text-gray-400">{strategy.technical.bollingerBands.percentB >= 80 ? '高位' : strategy.technical.bollingerBands.percentB <= 20 ? '低位' : '中位'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">趋势评分</div>
+                  <div className={`text-sm font-bold ${strategy.technical.trendScore >= 15 ? 'text-emerald-600' : strategy.technical.trendScore <= -15 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {strategy.technical.trendScore > 0 ? '+' : ''}{strategy.technical.trendScore}
+                  </div>
+                  <div className="text-[10px] text-gray-400">{strategy.technical.trend === 'strong_up' ? '强多' : strategy.technical.trend === 'up' ? '偏多' : strategy.technical.trend === 'sideways' ? '震荡' : strategy.technical.trend === 'down' ? '偏空' : '强空'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">支撑位</div>
+                  <div className="text-sm font-bold text-green-700">{strategy.technical.support.toFixed(4)}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">阻力位</div>
+                  <div className="text-sm font-bold text-red-700">{strategy.technical.resistance.toFixed(4)}</div>
+                </div>
+              </div>
+              <div className="mt-2.5 grid grid-cols-4 gap-2 text-xs text-gray-500">
+                <span>MA5 <strong className="text-gray-700">{strategy.technical.ma5.toFixed(4)}</strong></span>
+                <span>MA10 <strong className="text-gray-700">{strategy.technical.ma10.toFixed(4)}</strong></span>
+                <span>MA20 <strong className="text-gray-700">{strategy.technical.ma20.toFixed(4)}</strong></span>
+                <span>MA60 <strong className="text-gray-700">{strategy.technical.ma60.toFixed(4)}</strong></span>
+              </div>
+            </div>
+
+            {/* 风控指标 */}
+            <div className="px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">风控指标</h4>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">最大回撤</div>
+                  <div className="text-sm font-bold text-red-600">-{strategy.risk.maxDrawdown.toFixed(1)}%</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">当前回撤</div>
+                  <div className={`text-sm font-bold ${strategy.risk.currentDrawdown > 5 ? 'text-red-600' : 'text-gray-700'}`}>-{strategy.risk.currentDrawdown.toFixed(1)}%</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">年化波动率</div>
+                  <div className={`text-sm font-bold ${strategy.risk.volatility20d > 25 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.volatility20d.toFixed(1)}%</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">夏普比率</div>
+                  <div className={`text-sm font-bold ${strategy.risk.sharpeRatio >= 1 ? 'text-emerald-600' : strategy.risk.sharpeRatio < 0 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.sharpeRatio.toFixed(2)}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-gray-400">日胜率</div>
+                  <div className={`text-sm font-bold ${strategy.risk.winRate >= 55 ? 'text-emerald-600' : strategy.risk.winRate < 45 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.winRate.toFixed(0)}%</div>
+                </div>
+              </div>
+              <div className="mt-2 flex gap-4 text-xs text-gray-500">
+                <span>VaR(95%) <strong className="text-red-600">{strategy.risk.var95.toFixed(2)}%</strong></span>
+                <span>盈亏比 <strong className="text-gray-700">{strategy.risk.profitLossRatio.toFixed(2)}</strong></span>
+                <span>卡尔玛 <strong className="text-gray-700">{strategy.risk.calmarRatio.toFixed(2)}</strong></span>
+              </div>
+            </div>
+
+            {/* 市场环境 */}
+            {strategy.market.marketIndices.length > 0 && (
+              <div className="px-5 py-4">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                  市场环境
+                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${strategy.market.marketRegime === 'bull' ? 'bg-emerald-50 text-emerald-700' : strategy.market.marketRegime === 'bear' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
+                    {strategy.market.marketRegime === 'bull' ? '偏多' : strategy.market.marketRegime === 'bear' ? '偏空' : '震荡'}
+                  </span>
+                  <span className="ml-1.5 text-gray-400 font-normal">| 板块：{strategy.market.sector}</span>
+                </h4>
+                <div className="flex gap-3">
+                  {strategy.market.marketIndices.map((idx, i) => (
+                    <div key={i} className="flex-1 bg-gray-50 rounded-lg p-2 text-center">
+                      <div className="text-[10px] text-gray-400">{idx.name}</div>
+                      <div className={`text-sm font-bold ${idx.changePct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {idx.changePct >= 0 ? '+' : ''}{idx.changePct.toFixed(2)}%
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 交易信号 */}
+            <div className="px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">交易信号（{strategy.signals.length}条）</h4>
+              <div className="space-y-1.5">
+                {strategy.signals.sort((a, b) => Math.abs(b.strength) - Math.abs(a.strength)).map((s, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className={`mt-0.5 w-14 text-center px-1 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                      s.type === 'buy' ? 'bg-emerald-100 text-emerald-700' : s.type === 'sell' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+                    }`}>{s.source}</span>
+                    <span className="text-xs text-gray-600 leading-relaxed">{s.reason}</span>
+                    <span className={`shrink-0 text-xs font-mono font-bold ${s.strength > 0 ? 'text-emerald-600' : s.strength < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                      {s.strength > 0 ? '+' : ''}{s.strength}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 金字塔加减仓位 */}
+            {strategy.advice.pyramidLevels.length > 0 && (
+              <div className="px-5 py-4">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">金字塔加减仓参考</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-400">
+                      <th className="text-left py-1.5 font-medium">目标净值</th>
+                      <th className="text-left py-1.5 font-medium">操作</th>
+                      <th className="text-right py-1.5 font-medium">金额</th>
+                      <th className="text-left py-1.5 pl-3 font-medium">说明</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {strategy.advice.pyramidLevels.map((l, i) => (
+                        <tr key={i} className="hover:bg-gray-50">
+                          <td className="py-1.5 font-mono font-medium">{l.nav.toFixed(4)}</td>
+                          <td className={`py-1.5 font-medium ${l.action.includes('加') ? 'text-emerald-600' : 'text-red-600'}`}>{l.action}</td>
+                          <td className="py-1.5 text-right">{fmt(l.amount)}</td>
+                          <td className="py-1.5 pl-3 text-gray-500">{l.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="px-5 py-2.5 text-xs text-gray-400 bg-gray-50">
+              {new Date(strategy.timestamp).toLocaleString('zh-CN')} &middot; 60日数据 &middot; 本地量化引擎 &middot; 仅供参考，不构成投资建议
+            </div>
+          </div>
+        )}
+
+        {!strategy && !strategyLoading && (
+          <div className="px-5 py-8 text-center text-sm text-gray-400">
+            {fund.code ? '点击"开始分析"获取量化策略建议' : '需要设置基金代码才能获取净值趋势数据'}
+          </div>
+        )}
+      </div>
+
       {/* AI Advice */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
@@ -620,7 +860,7 @@ export default function FundDetail() {
             </div>
             <div>
               <h3 className="text-sm font-semibold text-gray-900">AI 操作建议</h3>
-              <p className="text-xs text-gray-400">基于持仓数据，分析涨跌情况下的操作策略</p>
+              <p className="text-xs text-gray-400">基于持仓+净值趋势，AI 给出具体操作建议</p>
             </div>
           </div>
           <button
@@ -1211,7 +1451,7 @@ export default function FundDetail() {
                     )}
                     {totalGain !== 0 && (
                       <div className="mt-1 text-gray-400">
-                        当前盈亏 {totalGain >= 0 ? '+' : ''}{fmt(totalGain)} &middot; 成本均价 {fmt(costNav)}
+                        当前盈亏 {totalGain >= 0 ? '+' : ''}{fmt(totalGain)} &middot; 成本均价 {fmtNav(costNav)}
                       </div>
                     )}
                   </div>
@@ -1242,11 +1482,11 @@ export default function FundDetail() {
                 {adjustForm.shares > 0 && adjustForm.nav > 0 && (
                   <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2.5">
                     调整后：持仓 <strong>{fmtNum(adjustForm.shares, 2)}</strong> 份 &middot;
-                    均价 <strong>{fmt(adjustForm.nav)}</strong> &middot;
+                    均价 <strong>{fmtNav(adjustForm.nav)}</strong> &middot;
                     总成本 <strong>{fmt(adjustForm.shares * adjustForm.nav)}</strong>
                     {holdingShares > 0 && (
                       <div className="mt-1 text-gray-400">
-                        当前：{fmtNum(holdingShares, 2)} 份 &middot; 均价 {fmt(costNav)} &middot; 总成本 {fmt(totalCost)}
+                        当前：{fmtNum(holdingShares, 2)} 份 &middot; 均价 {fmtNav(costNav)} &middot; 总成本 {fmt(totalCost)}
                       </div>
                     )}
                   </div>
@@ -1283,7 +1523,7 @@ export default function FundDetail() {
               <div className="mt-1.5">
                 {splitTx.type === 'dividend'
                   ? <>金额：{fmt(splitTx.price)}</>
-                  : <>{splitTx.shares} 份 @ {fmt(splitTx.price)} = {fmt(splitTx.shares * splitTx.price)}</>
+                  : <>{splitTx.shares} 份 @ {fmtNav(splitTx.price)} = {fmt(splitTx.shares * splitTx.price)}</>
                 }
               </div>
             </div>

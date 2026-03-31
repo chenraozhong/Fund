@@ -8,6 +8,7 @@ import aiRouter from './routes/ai';
 import importRouter from './routes/import';
 import tradesRouter from './routes/trades';
 import navRouter from './routes/nav';
+import strategyRouter from './routes/strategy';
 import { startAutoBackup } from './backup';
 
 const app = express();
@@ -24,6 +25,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/import', importRouter);
 app.use('/api/trades', tradesRouter);
 app.use('/api/nav', navRouter);
+app.use('/api/strategy', strategyRouter);
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
