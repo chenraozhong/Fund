@@ -35,6 +35,7 @@ export interface Fund {
   id: number;
   name: string;
   color: string;
+  code: string;
   market_nav: number;
   stop_profit_pct: number;
   stop_loss_pct: number;
@@ -124,6 +125,27 @@ export interface Trade {
   created_at: string;
 }
 
+export interface NavLatest {
+  code: string;
+  name: string;
+  date: string;
+  nav: number;
+  estimated_nav: number | null;
+  estimated_change: number | null;
+  estimate_time: string | null;
+}
+
+export interface NavDate {
+  date: string;
+  nav: number;
+  note?: string;
+}
+
+export interface NavHistory {
+  total: number;
+  list: { date: string; nav: number; cumulative_nav: number; change_pct: number | null }[];
+}
+
 export interface AiAdvice {
   advice: string;
   generated_at: string;
@@ -134,16 +156,16 @@ export interface AiAdvice {
 }
 
 export interface FundDetail {
-  fund: { id: number; name: string; color: string; market_nav: number; stop_profit_pct: number; stop_loss_pct: number; created_at: string };
+  fund: { id: number; name: string; color: string; code: string; market_nav: number; stop_profit_pct: number; stop_loss_pct: number; created_at: string };
   positions: Position[];
   transactions: Transaction[];
 }
 
 export const api = {
   getFunds: () => request<Fund[]>('/funds'),
-  createFund: (data: { name: string; color: string }) =>
+  createFund: (data: { name: string; color: string; code?: string }) =>
     request<Fund>('/funds', { method: 'POST', body: JSON.stringify(data) }),
-  updateFund: (id: number, data: { name?: string; color?: string; market_nav?: number }) =>
+  updateFund: (id: number, data: { name?: string; color?: string; code?: string; market_nav?: number }) =>
     request<Fund>(`/funds/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteFund: (id: number) =>
     request<void>(`/funds/${id}`, { method: 'DELETE' }),
@@ -170,8 +192,10 @@ export const api = {
     request<void>(`/trades/${id}`, { method: 'DELETE' }),
 
   getFundDetail: (id: number) => request<FundDetail>(`/funds/${id}/positions`),
-  adjustHolding: (id: number, target_shares: number, target_nav: number) =>
-    request<{ success: boolean }>(`/funds/${id}/adjust`, { method: 'POST', body: JSON.stringify({ target_shares, target_nav }) }),
+  adjustHolding: (id: number, target_shares: number, target_nav: number, mode?: 'transaction' | 'fix_base') =>
+    request<{ success: boolean }>(`/funds/${id}/adjust`, { method: 'POST', body: JSON.stringify({ target_shares, target_nav, mode: mode || 'transaction' }) }),
+  updateFundGain: (id: number, gain: number) =>
+    request<{ success: boolean; gain: number; targetCost: number; targetNav: number }>(`/funds/${id}/gain`, { method: 'POST', body: JSON.stringify({ gain }) }),
   getFundAdvice: (id: number) => request<AiAdvice>(`/ai/funds/${id}/advice`),
 
   importPreview: (text: string) =>
@@ -189,4 +213,12 @@ export const api = {
   getSummary: () => request<Summary>('/stats/summary'),
   getPerformance: () => request<PerformanceData>('/stats/performance'),
   getAllocation: () => request<Allocation[]>('/stats/allocation'),
+
+  getLatestNav: (code: string) => request<NavLatest>(`/nav/${code}/latest`),
+  getNavByDate: (code: string, date: string) => request<NavDate>(`/nav/${code}/date/${date}`),
+  refreshAllNav: () => request<{ updated: number; total: number; results: { id: number; name: string; code: string; nav: number | null; error?: string }[] }>('/nav/refresh-all', { method: 'POST' }),
+  getNavHistory: (code: string, params?: { start?: string; end?: string; pageSize?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
+    return request<NavHistory>(`/nav/${code}/history${qs}`);
+  },
 };

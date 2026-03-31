@@ -9,18 +9,18 @@ function fmt(n: number) {
 
 const typeLabel: Record<string, string> = { buy: '买入', sell: '卖出', dividend: '分红' }
 
-const EXAMPLE = `基金名称：稳健理财
+const EXAMPLE = `基金名称：南方有色金属ETF联接E
+基金代码：012414
 持仓总份额：5000
-平均净值：1.2345
 盈亏：+500
 最近交易：
-  2026-03-20 买入 1000份 净值1.20
-  2026-03-25 卖出 500份 净值1.30
-  2026-03-28 买入 800份 净值1.18
+  2026-03-20 买入 1000份
+  2026-03-25 卖出 500份
+  2026-03-28 买入 800元
 
 基金名称：科技成长
+基金代码：000001
 持仓总份额：3000
-平均净值：2.5600
 盈亏：-200
 最近交易：
   2026-03-22 买入 500份 净值2.60
@@ -33,6 +33,7 @@ export default function Import() {
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState('')
+  const [navErrors, setNavErrors] = useState<string[]>([])
   const [result, setResult] = useState<{ name: string; fundId: number; transactionCount: number }[] | null>(null)
 
   const handlePreview = async () => {
@@ -41,9 +42,11 @@ export default function Import() {
     setError('')
     setPreview(null)
     setResult(null)
+    setNavErrors([])
     try {
-      const res = await api.importPreview(text)
+      const res = await api.importPreview(text) as any
       setPreview(res.funds)
+      if (res.navErrors?.length) setNavErrors(res.navErrors)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -89,7 +92,7 @@ export default function Import() {
           value={text}
           onChange={e => setText(e.target.value)}
           rows={16}
-          placeholder={`支持的格式：\n\n基金名称：xxx\n持仓总份额：xxx\n平均净值：xxx\n盈亏：xxx\n最近交易：\n  2026-03-20 买入 1000份 净值1.20\n  2026-03-25 卖出 500份 净值1.30\n\n（可连续输入多个基金，空行分隔）`}
+          placeholder={`支持的格式：\n\n基金名称：xxx\n基金代码：012414（填写后自动获取净值和成本价）\n持仓总份额：xxx\n盈亏：xxx\n最近交易：\n  2026-03-20 买入 1000份\n  2026-03-25 卖出 500份\n\n（有基金代码时，净值和持仓成本价均自动获取计算）`}
           className="w-full border border-gray-300 rounded-lg px-4 py-3 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-y"
         />
         <div className="flex gap-3">
@@ -98,7 +101,7 @@ export default function Import() {
             disabled={loading || !text.trim()}
             className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium shadow-sm transition-colors"
           >
-            {loading ? '解析中...' : '预览'}
+            {loading ? '解析中（正在获取净值）...' : '预览'}
           </button>
           <button
             onClick={() => { setText(''); setPreview(null); setError(''); setResult(null) }}
@@ -114,6 +117,17 @@ export default function Import() {
         <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
           {error}
+        </div>
+      )}
+
+      {/* NAV fetch warnings */}
+      {navErrors.length > 0 && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm space-y-1">
+          <div className="flex items-center gap-2 font-medium">
+            <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+            净值获取提醒
+          </div>
+          {navErrors.map((e, i) => <p key={i} className="ml-6">{e}</p>)}
         </div>
       )}
 
@@ -167,11 +181,18 @@ export default function Import() {
             <div key={i} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               {/* Fund header */}
               <div className="px-5 py-4 border-b border-gray-100">
-                <h3 className="text-base font-semibold text-gray-900">{f.name}</h3>
+                <h3 className="text-base font-semibold text-gray-900">
+                  {f.name} {(f as any).code && <span className="text-sm font-normal text-gray-400 ml-1">({(f as any).code})</span>}
+                  {(f as any).existingFundId && (
+                    <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
+                      已存在，将更新
+                    </span>
+                  )}
+                </h3>
                 <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-600">
                   <span>持仓 <strong>{f.totalShares}</strong> 份</span>
-                  <span>持仓均价 <strong>{fmt(f.avgNav)}</strong></span>
                   <span>当前净值 <strong>{fmt((f as any).marketNav || 0)}</strong></span>
+                  <span>持仓均价 <strong>{fmt(f.avgNav)}</strong> <span className="text-xs text-gray-400">(自动计算)</span></span>
                   <span className={f.gain >= 0 ? 'text-green-600' : 'text-red-600'}>
                     盈亏 <strong>{f.gain >= 0 ? '+' : ''}{fmt(f.gain)}</strong>
                   </span>
@@ -229,16 +250,17 @@ export default function Import() {
         <h3 className="text-sm font-semibold text-gray-700 mb-3">格式说明</h3>
         <div className="text-xs text-gray-500 space-y-1.5 font-mono">
           <p>基金名称：[名称]</p>
+          <p>基金代码：[代码] <span className="text-gray-400">← 填写后自动获取净值和计算成本价</span></p>
           <p>持仓总份额：[当前持有份额]</p>
-          <p>平均净值：[当前持仓成本均价]</p>
           <p>盈亏：[+/-数字]</p>
           <p>最近交易：</p>
-          <p className="ml-4">[日期] 买入 [数值]份 净值[价格]  <span className="text-gray-400">← 按份额</span></p>
-          <p className="ml-4">[日期] 买入 [数值]元 净值[价格]  <span className="text-gray-400">← 按金额</span></p>
-          <p className="ml-4">[日期] 买入 [数值] 净值[价格]   <span className="text-gray-400">← 无单位默认按金额</span></p>
-          <p className="ml-4">[日期] 卖出 [数值]份/元 净值[价格]</p>
+          <p className="ml-4">[日期] 买入 [数值]份  <span className="text-gray-400">← 按份额，净值自动获取</span></p>
+          <p className="ml-4">[日期] 买入 [数值]元  <span className="text-gray-400">← 按金额，净值自动获取</span></p>
+          <p className="ml-4">[日期] 买入 [数值]份 净值[价格]  <span className="text-gray-400">← 手动指定净值</span></p>
+          <p className="ml-4">[日期] 卖出 [数值]份/元</p>
           <p className="ml-4">[日期] 分红 [金额]元</p>
-          <p className="mt-2 text-gray-400">持仓总份额和平均净值为当前现状，系统会自动反推历史底仓</p>
+          <p className="mt-2 text-gray-400">有基金代码时，持仓成本价根据「最新净值×份额-盈亏」自动计算</p>
+          <p className="text-gray-400">交易行可省略净值，系统自动从天天基金查询</p>
           <p className="text-gray-400">多个基金用空行分隔，可一次性导入</p>
         </div>
       </div>

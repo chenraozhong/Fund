@@ -8,6 +8,10 @@ function fmt(n: number) {
   return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
 }
 
+function fmtNav(n: number) {
+  return '¥' + n.toFixed(4)
+}
+
 function fmtNum(n: number, decimals = 4) {
   return n.toLocaleString('zh-CN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
@@ -36,7 +40,7 @@ const typeConfig = {
   dividend: { label: '分红',  bg: 'bg-amber-50',    text: 'text-amber-700',   border: 'border-amber-200',   icon: '$' },
 }
 
-const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '' }
+const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '', inputMode: 'amount' as 'shares' | 'amount', inputValue: 0 }
 
 export default function FundDetail() {
   const { id } = useParams<{ id: string }>()
@@ -68,6 +72,11 @@ export default function FundDetail() {
   const [pairing, setPairing] = useState(false)
   const [showAdjust, setShowAdjust] = useState(false)
   const [adjustForm, setAdjustForm] = useState({ shares: 0, nav: 0 })
+  const [adjustMode, setAdjustMode] = useState<'transaction' | 'fix_base' | 'gain'>('transaction')
+  const [gainForm, setGainForm] = useState(0)
+  const [navLoading, setNavLoading] = useState(false)
+  const [navHint, setNavHint] = useState('')
+  const [navUpdating, setNavUpdating] = useState(false)
 
   const load = () => {
     api.getFundDetail(fundId).then(d => {
@@ -252,13 +261,20 @@ export default function FundDetail() {
 
   const handleAdjust = async () => {
     try {
-      await api.adjustHolding(fundId, adjustForm.shares, adjustForm.nav)
+      if (adjustMode === 'gain') {
+        await api.updateFundGain(fundId, gainForm)
+      } else {
+        await api.adjustHolding(fundId, adjustForm.shares, adjustForm.nav, adjustMode)
+      }
       setShowAdjust(false)
       load()
     } catch (err: any) {
       setError(err.message)
     }
   }
+
+  // 检查是否有历史持仓记录（用于判断是否可用 fix_base 模式）
+  const hasBase = transactions.some(t => t.notes?.includes('历史持仓'))
 
   const handleUnpair = async (tradeId: number) => {
     try {
@@ -280,15 +296,61 @@ export default function FundDetail() {
 
   const totalTradeProfit = trades.reduce((s, t) => s + t.profit, 0)
 
+  const updateLatestNav = async () => {
+    if (!fund.code) return
+    setNavUpdating(true)
+    try {
+      const result = await api.getLatestNav(fund.code)
+      await api.updateFund(fundId, { market_nav: result.nav })
+      load()
+    } catch (err: any) {
+      setError('获取最新净值失败: ' + err.message)
+    } finally {
+      setNavUpdating(false)
+    }
+  }
+
+  const autoFetchNav = async (date: string) => {
+    if (!fund.code || !date) { setNavHint(''); return }
+    setNavLoading(true)
+    setNavHint('')
+    try {
+      const result = await api.getNavByDate(fund.code, date)
+      setForm(f => ({ ...f, price: result.nav }))
+      setNavHint(result.note ? `${result.date} 净值 ${result.nav}（${result.note}）` : `${result.date} 净值 ${result.nav}`)
+    } catch {
+      setNavHint('未查到该日期净值，请手动输入')
+    } finally {
+      setNavLoading(false)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!form.date || !form.asset) {
-      setError('请填写日期和资产。')
+    if (!form.date) {
+      setError('请填写日期。')
       return
     }
+    const asset = fund.name
+
+    let submitShares = form.shares
+    let submitPrice = form.price
+
+    if (form.type === 'dividend') {
+      submitShares = 0
+      submitPrice = form.inputValue || form.price
+    } else if (form.inputMode === 'amount') {
+      if (form.price <= 0) { setError('净值未获取到，无法计算份额'); return }
+      submitShares = Math.round((form.inputValue / form.price) * 10000) / 10000
+      submitPrice = form.price
+    } else {
+      submitShares = form.inputValue || form.shares
+      submitPrice = form.price
+    }
+
     try {
-      const payload = { ...form, fund_id: fundId }
+      const payload = { fund_id: fundId, date: form.date, type: form.type, asset, shares: submitShares, price: submitPrice, notes: form.notes }
       if (editId) {
         await api.updateTransaction(editId, payload)
       } else {
@@ -304,7 +366,7 @@ export default function FundDetail() {
   }
 
   const startEdit = (tx: Transaction) => {
-    setForm({ fund_id: fundId, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '' })
+    setForm({ fund_id: fundId, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '', inputMode: 'shares', inputValue: tx.type === 'dividend' ? tx.price : tx.shares })
     setEditId(tx.id)
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -398,13 +460,14 @@ export default function FundDetail() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{fund.name}</h1>
             <p className="text-sm text-gray-500">
+              {fund.code && <span className="text-gray-400 mr-1.5">{fund.code}</span>}
               {positions.length} 个资产 &middot; {transactions.length} 条交易
             </p>
           </div>
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => { setShowAdjust(true); setAdjustForm({ shares: holdingShares, nav: costNav }) }}
+            onClick={() => { setShowAdjust(true); setAdjustMode('gain'); setGainForm(Math.round(totalGain * 100) / 100); setAdjustForm({ shares: holdingShares, nav: costNav }) }}
             className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 text-sm font-medium transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
@@ -455,16 +518,27 @@ export default function FundDetail() {
               <h3 className="text-sm font-semibold text-gray-900">策略模型</h3>
               <p className="text-xs text-gray-400">
                 止盈 {stopProfit}% / 止损 {stopLoss}%
-                {mNav > 0 && <> &middot; 当前净值 {fmt(mNav)}</>}
+                {mNav > 0 && <> &middot; 当前净值 {fmtNav(mNav)}</>}
               </p>
             </div>
           </div>
-          <button
-            onClick={() => { setEditingStrategy(!editingStrategy); setStrategyForm({ stop_profit_pct: stopProfit, stop_loss_pct: stopLoss, market_nav: mNav }) }}
-            className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-          >
-            {editingStrategy ? '取消' : '设置'}
-          </button>
+          <div className="flex gap-3">
+            {fund.code && (
+              <button
+                onClick={updateLatestNav}
+                disabled={navUpdating}
+                className="text-xs text-green-600 hover:text-green-800 font-medium disabled:opacity-50"
+              >
+                {navUpdating ? '更新中...' : '获取最新净值'}
+              </button>
+            )}
+            <button
+              onClick={() => { setEditingStrategy(!editingStrategy); setStrategyForm({ stop_profit_pct: stopProfit, stop_loss_pct: stopLoss, market_nav: mNav }) }}
+              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+            >
+              {editingStrategy ? '取消' : '设置'}
+            </button>
+          </div>
         </div>
 
         {/* Settings form */}
@@ -527,7 +601,7 @@ export default function FundDetail() {
               </tbody>
             </table>
             <div className="px-4 py-2 text-xs text-gray-400 border-t border-gray-100">
-              持仓均价 {fmt(costNav)} &middot; 当前净值 {fmt(mNav)} &middot; 持有 {fmtNum(holdingShares, 2)} 份
+              持仓均价 {fmtNav(costNav)} &middot; 当前净值 {fmtNav(mNav)} &middot; 持有 {fmtNum(holdingShares, 2)} 份
             </div>
           </div>
         ) : (
@@ -625,8 +699,9 @@ export default function FundDetail() {
           )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">日期</label>
-              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">日期 {navLoading && <span className="text-blue-500 text-xs ml-1">查询净值中...</span>}</label>
+              <input type="date" value={form.date} onChange={e => { setForm({ ...form, date: e.target.value }); if (form.type !== 'dividend') autoFetchNav(e.target.value) }} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+              {navHint && <p className="text-xs text-blue-600 mt-1">{navHint}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">类型</label>
@@ -643,22 +718,32 @@ export default function FundDetail() {
                 })}
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">资产 / 代码</label>
-              <input value={form.asset} onChange={e => setForm({ ...form, asset: e.target.value.toUpperCase() })} placeholder="例如 VTI" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
-            </div>
             {form.type !== 'dividend' ? (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">份额</label>
-                  <input type="number" step="any" value={form.shares || ''} onChange={e => setForm({ ...form, shares: Number(e.target.value) })} placeholder="0" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">输入方式</label>
+                  <div className="flex gap-1.5">
+                    <button type="button" onClick={() => setForm({ ...form, inputMode: 'amount', inputValue: 0 })}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.inputMode === 'amount' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>按金额</button>
+                    <button type="button" onClick={() => setForm({ ...form, inputMode: 'shares', inputValue: 0 })}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.inputMode === 'shares' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>按份额</button>
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">单价</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{form.inputMode === 'amount' ? '金额' : '份额'}</label>
                   <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
-                    <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">{form.inputMode === 'amount' ? '¥' : '份'}</span>
+                    <input type="number" step="any" value={form.inputValue || ''} onChange={e => setForm({ ...form, inputValue: Number(e.target.value) })} placeholder="0" className="w-full border border-gray-300 rounded-lg pl-8 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
                   </div>
+                  {form.inputValue > 0 && form.price > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      净值 {form.price.toFixed(4)} &middot;
+                      {form.inputMode === 'amount'
+                        ? <>份额 {(form.inputValue / form.price).toFixed(4)} &middot; 金额 {fmt(form.inputValue)}</>
+                        : <>份额 {form.inputValue} &middot; 金额 {fmt(form.inputValue * form.price)}</>
+                      }
+                    </p>
+                  )}
                 </div>
               </>
             ) : (
@@ -666,7 +751,7 @@ export default function FundDetail() {
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">金额</label>
                 <div className="relative">
                   <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
-                  <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                  <input type="number" step="any" value={form.inputValue || ''} onChange={e => setForm({ ...form, inputValue: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
                 </div>
               </div>
             )}
@@ -703,7 +788,7 @@ export default function FundDetail() {
                 <div className="text-xs text-blue-700 mt-1">
                   可合并为：<strong className="font-mono">{selSummary.asset}</strong>
                   {selSummary.type !== 'dividend' && (
-                    <> &middot; {fmtNum(selSummary.totalShares, 2)} 份 @ {fmt(selSummary.avgPrice)}/份</>
+                    <> &middot; {fmtNum(selSummary.totalShares, 2)} 份 @ {fmtNav(selSummary.avgPrice)}/份</>
                   )}
                   {' '}&middot; 总计 {fmt(selSummary.totalAmount)}
                 </div>
@@ -749,12 +834,12 @@ export default function FundDetail() {
                 <div className="bg-white rounded-lg p-3 border border-blue-100">
                   <div className="text-emerald-600 font-medium mb-1">买入合计</div>
                   <div className="font-medium text-gray-900">{fmtNum(pairInfo.totalBuyShares, 2)} 份</div>
-                  <div className="text-gray-500">均价 {fmt(pairInfo.avgBuyPrice)} &middot; 金额 {fmt(pairInfo.totalBuyCost)}</div>
+                  <div className="text-gray-500">均价 {fmtNav(pairInfo.avgBuyPrice)} &middot; 金额 {fmt(pairInfo.totalBuyCost)}</div>
                 </div>
                 <div className="bg-white rounded-lg p-3 border border-blue-100">
                   <div className="text-red-600 font-medium mb-1">卖出合计</div>
                   <div className="font-medium text-gray-900">{fmtNum(pairInfo.totalSellShares, 2)} 份</div>
-                  <div className="text-gray-500">均价 {fmt(pairInfo.avgSellPrice)} &middot; 金额 {fmt(pairInfo.totalSellRevenue)}</div>
+                  <div className="text-gray-500">均价 {fmtNav(pairInfo.avgSellPrice)} &middot; 金额 {fmt(pairInfo.totalSellRevenue)}</div>
                 </div>
               </div>
               <div className="mt-3 bg-white rounded-lg p-3 border border-blue-100">
@@ -829,13 +914,13 @@ export default function FundDetail() {
                       <div className="bg-white rounded-lg p-3 border border-gray-100">
                         <div className="text-emerald-600 font-medium mb-1">买入</div>
                         <div>{formatDate(t.buy_date)}</div>
-                        <div className="font-medium text-gray-900 mt-0.5">{fmtNum(t.paired_shares, 2)} 份 @ {fmt(t.buy_price)}</div>
+                        <div className="font-medium text-gray-900 mt-0.5">{fmtNum(t.paired_shares, 2)} 份 @ {fmtNav(t.buy_price)}</div>
                         <div className="text-gray-500">金额 {fmt(buyAmount)}</div>
                       </div>
                       <div className="bg-white rounded-lg p-3 border border-gray-100">
                         <div className="text-red-600 font-medium mb-1">卖出</div>
                         <div>{formatDate(t.sell_date)}</div>
-                        <div className="font-medium text-gray-900 mt-0.5">{fmtNum(t.paired_shares, 2)} 份 @ {fmt(t.sell_price)}</div>
+                        <div className="font-medium text-gray-900 mt-0.5">{fmtNum(t.paired_shares, 2)} 份 @ {fmtNav(t.sell_price)}</div>
                         <div className="text-gray-500">金额 {fmt(sellAmount)}</div>
                       </div>
                     </div>
@@ -918,7 +1003,7 @@ export default function FundDetail() {
                       </div>
                       <div>
                         <div className="text-xs text-gray-400 tracking-wide">单位净值</div>
-                        <div className="text-sm font-semibold text-gray-900 mt-0.5">{fmt(pos.nav)}</div>
+                        <div className="text-sm font-semibold text-gray-900 mt-0.5">{fmtNav(pos.nav)}</div>
                       </div>
                       <div>
                         <div className="text-xs text-gray-400 tracking-wide">总成本</div>
@@ -941,7 +1026,7 @@ export default function FundDetail() {
                     </div>
                     <div>
                       <span className="text-xs text-gray-400">单位净值</span>
-                      <div className="text-sm font-semibold">{fmt(pos.nav)}</div>
+                      <div className="text-sm font-semibold">{fmtNav(pos.nav)}</div>
                     </div>
                     <div>
                       <span className="text-xs text-gray-400">总成本</span>
@@ -1006,7 +1091,7 @@ export default function FundDetail() {
                             <div className="text-sm text-gray-900">{formatDate(tx.date)}</div>
                             <div className="text-xs text-gray-500">
                               {tx.type !== 'dividend'
-                                ? <>{tx.shares} 份 @ {fmt(tx.price)}</>
+                                ? <>{tx.shares} 份 @ {fmtNav(tx.price)}</>
                                 : <>分红</>
                               }
                               {tx.notes && <span className="ml-2 text-gray-400">&middot; {tx.notes}</span>}
@@ -1063,39 +1148,119 @@ export default function FundDetail() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAdjust(false)}>
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900">调整持仓</h3>
-            <p className="text-xs text-gray-500">直接修改当前持有份额和持仓均价，系统会自动生成调整交易。</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">持有份额</label>
-                <input type="number" step="any" value={adjustForm.shares || ''} onChange={e => setAdjustForm({ ...adjustForm, shares: Number(e.target.value) })}
-                  className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">持仓均价</label>
-                <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
-                  <input type="number" step="any" value={adjustForm.nav || ''} onChange={e => setAdjustForm({ ...adjustForm, nav: Number(e.target.value) })}
-                    className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                </div>
-              </div>
+
+            {/* Mode selector */}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAdjustMode('gain')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  adjustMode === 'gain' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                修改盈亏
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdjustMode('transaction')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  adjustMode === 'transaction' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                调整交易
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdjustMode('fix_base')}
+                disabled={!hasBase}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  adjustMode === 'fix_base' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                修正底仓
+              </button>
             </div>
-            {adjustForm.shares > 0 && adjustForm.nav > 0 && (
-              <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2.5">
-                调整后：持仓 <strong>{fmtNum(adjustForm.shares, 2)}</strong> 份 &middot;
-                均价 <strong>{fmt(adjustForm.nav)}</strong> &middot;
-                总成本 <strong>{fmt(adjustForm.shares * adjustForm.nav)}</strong>
-                {holdingShares > 0 && (
-                  <div className="mt-1 text-gray-400">
-                    当前：{fmtNum(holdingShares, 2)} 份 &middot; 均价 {fmt(costNav)} &middot; 总成本 {fmt(totalCost)}
+            <p className="text-xs text-gray-500">
+              {adjustMode === 'gain'
+                ? '输入当前盈亏金额，系统根据最新净值自动反算持仓成本。需先设置市场净值。'
+                : adjustMode === 'transaction'
+                ? '生成补差交易记录，适用于实际发生了变动的情况。'
+                : '直接修改历史持仓底仓数据，适用于之前数据录入有误需要更正。'}
+            </p>
+
+            {adjustMode === 'gain' ? (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">当前盈亏金额</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
+                    <input type="number" step="any" value={gainForm || ''} onChange={e => setGainForm(Number(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                      placeholder="正数为盈利，负数为亏损" />
+                  </div>
+                </div>
+                {mNav > 0 && holdingShares > 0 && (
+                  <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2.5">
+                    <div>当前净值 <strong>{fmtNav(mNav)}</strong> &middot; 持有 <strong>{fmtNum(holdingShares, 2)}</strong> 份</div>
+                    <div className="mt-1">市值 <strong>{fmt(holdingShares * mNav)}</strong></div>
+                    {gainForm !== 0 && (
+                      <div className="mt-1 text-blue-600">
+                        调整后成本 <strong>{fmt(holdingShares * mNav - gainForm)}</strong> &middot;
+                        成本均价 <strong>{fmtNav((holdingShares * mNav - gainForm) / holdingShares)}</strong>
+                      </div>
+                    )}
+                    {totalGain !== 0 && (
+                      <div className="mt-1 text-gray-400">
+                        当前盈亏 {totalGain >= 0 ? '+' : ''}{fmt(totalGain)} &middot; 成本均价 {fmt(costNav)}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+                {(!mNav || mNav <= 0) && (
+                  <div className="text-xs text-amber-600 bg-amber-50 rounded-lg p-2.5">
+                    请先在策略模型中设置当前市场净值
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">持有份额</label>
+                    <input type="number" step="any" value={adjustForm.shares || ''} onChange={e => setAdjustForm({ ...adjustForm, shares: Number(e.target.value) })}
+                      className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">持仓均价</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
+                      <input type="number" step="any" value={adjustForm.nav || ''} onChange={e => setAdjustForm({ ...adjustForm, nav: Number(e.target.value) })}
+                        className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </div>
+                  </div>
+                </div>
+                {adjustForm.shares > 0 && adjustForm.nav > 0 && (
+                  <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2.5">
+                    调整后：持仓 <strong>{fmtNum(adjustForm.shares, 2)}</strong> 份 &middot;
+                    均价 <strong>{fmt(adjustForm.nav)}</strong> &middot;
+                    总成本 <strong>{fmt(adjustForm.shares * adjustForm.nav)}</strong>
+                    {holdingShares > 0 && (
+                      <div className="mt-1 text-gray-400">
+                        当前：{fmtNum(holdingShares, 2)} 份 &middot; 均价 {fmt(costNav)} &middot; 总成本 {fmt(totalCost)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
             <div className="flex justify-end gap-3 pt-2">
               <button onClick={() => setShowAdjust(false)} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">取消</button>
-              <button onClick={handleAdjust} disabled={!adjustForm.shares || !adjustForm.nav}
-                className="px-4 py-2 text-sm text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50">
-                确认调整
+              <button onClick={handleAdjust} disabled={adjustMode === 'gain' ? (!mNav || mNav <= 0) : (!adjustForm.shares || !adjustForm.nav)}
+                className={`px-4 py-2 text-sm text-white rounded-lg disabled:opacity-50 ${
+                  adjustMode === 'gain' ? 'bg-green-600 hover:bg-green-700'
+                    : adjustMode === 'fix_base' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-amber-600 hover:bg-amber-700'
+                }`}>
+                {adjustMode === 'gain' ? '确认修改盈亏' : adjustMode === 'fix_base' ? '修正底仓' : '确认调整'}
               </button>
             </div>
           </div>

@@ -11,7 +11,7 @@ function formatDate(d: string) {
   return new Date(d + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '' }
+const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '', inputMode: 'amount' as 'shares' | 'amount', inputValue: 0 }
 
 const typeConfig = {
   buy:      { label: '买入',  bg: 'bg-emerald-50',  text: 'text-emerald-700', border: 'border-emerald-200', icon: '↑' },
@@ -31,6 +31,25 @@ export default function Transactions() {
   const [form, setForm] = useState(emptyForm)
   const [deleteId, setDeleteId] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [navLoading, setNavLoading] = useState(false)
+  const [navHint, setNavHint] = useState('')
+
+  const autoFetchNav = async (fundId: number, date: string, type: string) => {
+    if (type === 'dividend' || !fundId || !date) { setNavHint(''); return }
+    const fund = funds.find(f => f.id === fundId)
+    if (!fund?.code) { setNavHint(''); return }
+    setNavLoading(true)
+    setNavHint('')
+    try {
+      const result = await api.getNavByDate(fund.code, date)
+      setForm(f => ({ ...f, price: result.nav }))
+      setNavHint(result.note ? `${result.date} 净值 ${result.nav}（${result.note}）` : `${result.date} 净值 ${result.nav}`)
+    } catch {
+      setNavHint('未查到该日期净值，请手动输入')
+    } finally {
+      setNavLoading(false)
+    }
+  }
 
   const load = () => {
     const params: Record<string, string> = {}
@@ -49,15 +68,34 @@ export default function Transactions() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!form.fund_id || !form.date || !form.asset) {
-      setError('请选择基金、日期和资产。')
+    if (!form.fund_id || !form.date) {
+      setError('请选择基金和日期。')
       return
     }
+    const selectedFund = funds.find(f => f.id === form.fund_id)
+    const asset = selectedFund?.name || form.asset
+
+    let submitShares = form.shares
+    let submitPrice = form.price
+
+    if (form.type === 'dividend') {
+      submitShares = 0
+      submitPrice = form.inputValue || form.price
+    } else if (form.inputMode === 'amount') {
+      if (form.price <= 0) { setError('净值未获取到，无法计算份额'); return }
+      submitShares = Math.round((form.inputValue / form.price) * 10000) / 10000
+      submitPrice = form.price
+    } else {
+      submitShares = form.inputValue || form.shares
+      submitPrice = form.price
+    }
+
     try {
+      const payload = { fund_id: form.fund_id, date: form.date, type: form.type, asset, shares: submitShares, price: submitPrice, notes: form.notes }
       if (editId) {
-        await api.updateTransaction(editId, form)
+        await api.updateTransaction(editId, payload)
       } else {
-        await api.createTransaction(form)
+        await api.createTransaction(payload)
       }
       setShowForm(false)
       setEditId(null)
@@ -69,7 +107,7 @@ export default function Transactions() {
   }
 
   const startEdit = (tx: Transaction) => {
-    setForm({ fund_id: tx.fund_id, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '' })
+    setForm({ fund_id: tx.fund_id, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '', inputMode: 'shares', inputValue: tx.type === 'dividend' ? tx.price : tx.shares })
     setEditId(tx.id)
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -156,14 +194,15 @@ export default function Transactions() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">基金</label>
-              <select value={form.fund_id} onChange={e => setForm({ ...form, fund_id: Number(e.target.value) })} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required>
+              <select value={form.fund_id} onChange={e => { const fid = Number(e.target.value); setForm({ ...form, fund_id: fid }); if (form.date) autoFetchNav(fid, form.date, form.type) }} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required>
                 <option value={0}>选择基金</option>
-                {funds.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                {funds.map(f => <option key={f.id} value={f.id}>{f.name}{f.code ? ` (${f.code})` : ''}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">日期</label>
-              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">日期 {navLoading && <span className="text-blue-500 text-xs ml-1">查询净值中...</span>}</label>
+              <input type="date" value={form.date} onChange={e => { setForm({ ...form, date: e.target.value }); autoFetchNav(form.fund_id, e.target.value, form.type) }} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
+              {navHint && <p className="text-xs text-blue-600 mt-1">{navHint}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">类型</label>
@@ -187,21 +226,22 @@ export default function Transactions() {
                 })}
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">资产 / 代码</label>
-              <input value={form.asset} onChange={e => setForm({ ...form, asset: e.target.value.toUpperCase() })} placeholder="例如 VTI" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" required />
-            </div>
             {form.type !== 'dividend' ? (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">份额</label>
-                  <input type="number" step="any" value={form.shares || ''} onChange={e => setForm({ ...form, shares: Number(e.target.value) })} placeholder="0" className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">输入方式</label>
+                  <div className="flex gap-1.5">
+                    <button type="button" onClick={() => setForm({ ...form, inputMode: 'amount', inputValue: 0 })}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.inputMode === 'amount' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>按金额</button>
+                    <button type="button" onClick={() => setForm({ ...form, inputMode: 'shares', inputValue: 0 })}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.inputMode === 'shares' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>按份额</button>
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">单价</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">{form.inputMode === 'amount' ? '金额' : '份额'}</label>
                   <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
-                    <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                    <span className="absolute left-3 top-2.5 text-gray-400 text-sm">{form.inputMode === 'amount' ? '¥' : '份'}</span>
+                    <input type="number" step="any" value={form.inputValue || ''} onChange={e => setForm({ ...form, inputValue: Number(e.target.value) })} placeholder="0" className="w-full border border-gray-300 rounded-lg pl-8 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
                   </div>
                 </div>
               </>
@@ -210,7 +250,7 @@ export default function Transactions() {
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">金额</label>
                 <div className="relative">
                   <span className="absolute left-3 top-2.5 text-gray-400 text-sm">¥</span>
-                  <input type="number" step="any" value={form.price || ''} onChange={e => setForm({ ...form, price: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                  <input type="number" step="any" value={form.inputValue || ''} onChange={e => setForm({ ...form, inputValue: Number(e.target.value) })} placeholder="0.00" className="w-full border border-gray-300 rounded-lg pl-7 pr-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
                 </div>
               </div>
             )}
@@ -221,15 +261,27 @@ export default function Transactions() {
           </div>
 
           {/* Live preview */}
-          {form.fund_id > 0 && form.asset && (
-            <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
-              预览：<strong>{typeConfig[form.type].label}</strong> {form.type !== 'dividend' && <>{form.shares || 0} 份</>} <strong className="font-mono">{form.asset || '...'}</strong>
-              {form.type !== 'dividend'
-                ? <> 单价 {fmt(form.price || 0)} = <strong>{fmt((form.shares || 0) * (form.price || 0))}</strong></>
-                : <> 金额 <strong>{fmt(form.price || 0)}</strong></>
-              }
-            </div>
-          )}
+          {form.fund_id > 0 && form.inputValue > 0 && (() => {
+            const pFund = funds.find(f => f.id === form.fund_id)
+            return (
+              <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
+                {form.type === 'dividend' ? (
+                  <>预览：<strong>分红</strong> <strong className="font-mono">{pFund?.name}</strong> 金额 <strong>{fmt(form.inputValue)}</strong></>
+                ) : form.price > 0 ? (
+                  <>
+                    预览：<strong>{typeConfig[form.type].label}</strong> <strong className="font-mono">{pFund?.name}</strong>
+                    {' '}净值 {form.price.toFixed(4)} &middot;{' '}
+                    {form.inputMode === 'amount'
+                      ? <>金额 {fmt(form.inputValue)} = <strong>{(form.inputValue / form.price).toFixed(4)} 份</strong></>
+                      : <>{form.inputValue} 份 = <strong>{fmt(form.inputValue * form.price)}</strong></>
+                    }
+                  </>
+                ) : (
+                  <span className="text-amber-600">等待获取净值...</span>
+                )}
+              </div>
+            )
+          })()}
 
           <div className="flex gap-3 pt-2">
             <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">

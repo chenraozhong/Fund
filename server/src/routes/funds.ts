@@ -38,27 +38,41 @@ router.get('/', (_req: Request, res: Response) => {
 });
 
 router.post('/', (req: Request, res: Response) => {
-  const { name, color } = req.body;
+  const { name, color, code } = req.body;
   if (!name) {
     res.status(400).json({ error: 'Name is required' });
     return;
   }
-  const result = db.prepare('INSERT INTO funds (name, color) VALUES (?, ?)').run(name, color || '#378ADD');
+
+  // 如果有基金代码，检查是否已存在同代码基金 → 更新名称
+  if (code) {
+    const existing = db.prepare('SELECT * FROM funds WHERE code = ?').get(code) as any;
+    if (existing) {
+      db.prepare('UPDATE funds SET name = ?, color = COALESCE(?, color) WHERE id = ?')
+        .run(name, color || null, existing.id);
+      const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(existing.id);
+      res.json(fund);
+      return;
+    }
+  }
+
+  const result = db.prepare('INSERT INTO funds (name, color, code) VALUES (?, ?, ?)').run(name, color || '#378ADD', code || '');
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(fund);
 });
 
 router.put('/:id', (req: Request, res: Response) => {
-  const { name, color, market_nav, stop_profit_pct, stop_loss_pct } = req.body;
+  const { name, color, code, market_nav, stop_profit_pct, stop_loss_pct } = req.body;
   const { id } = req.params;
   db.prepare(`UPDATE funds SET
     name = COALESCE(?, name),
     color = COALESCE(?, color),
+    code = COALESCE(?, code),
     market_nav = COALESCE(?, market_nav),
     stop_profit_pct = COALESCE(?, stop_profit_pct),
     stop_loss_pct = COALESCE(?, stop_loss_pct)
     WHERE id = ?`
-  ).run(name, color, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, id);
+  ).run(name, color, code ?? null, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, id);
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id);
   if (!fund) {
     res.status(404).json({ error: 'Fund not found' });
@@ -67,10 +81,12 @@ router.put('/:id', (req: Request, res: Response) => {
   res.json(fund);
 });
 
-// Adjust holding: set target shares and cost NAV by creating/updating an adjustment transaction
+// Adjust holding: set target shares and cost NAV
+// mode = 'transaction' (default): generate adjustment transactions to reach target
+// mode = 'fix_base': directly modify the base/historical transaction
 router.post('/:id/adjust', (req: Request, res: Response) => {
   const { id } = req.params;
-  const { target_shares, target_nav } = req.body;
+  const { target_shares, target_nav, mode } = req.body;
 
   if (target_shares == null || target_nav == null) {
     res.status(400).json({ error: '需要 target_shares 和 target_nav' });
@@ -83,7 +99,47 @@ router.post('/:id/adjust', (req: Request, res: Response) => {
     return;
   }
 
-  // Get current position from transactions
+  // 模式二：修正历史持仓
+  if (mode === 'fix_base') {
+    const base = db.prepare(
+      "SELECT * FROM transactions WHERE fund_id = ? AND notes LIKE '%历史持仓%' AND type = 'buy' ORDER BY id LIMIT 1"
+    ).get(id) as any;
+
+    if (!base) {
+      res.status(400).json({ error: '未找到历史持仓记录，无法使用此模式' });
+      return;
+    }
+
+    // 计算除了底仓以外的其他交易产生的净份额和净成本
+    const others = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as net_shares,
+        COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+        COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as net_cost
+      FROM transactions WHERE fund_id = ? AND id != ?
+    `).get(id, base.id) as any;
+
+    // 底仓 = 目标 - 其他交易的贡献
+    const newBaseShares = target_shares - others.net_shares;
+    const newBaseCost = target_shares * target_nav - others.net_cost;
+
+    if (newBaseShares <= 0) {
+      res.status(400).json({ error: `修正后底仓份额为 ${newBaseShares.toFixed(2)}，不合理。请检查目标值。` });
+      return;
+    }
+
+    const newBasePrice = Math.round((newBaseCost / newBaseShares) * 10000) / 10000;
+
+    db.prepare('UPDATE transactions SET shares = ?, price = ? WHERE id = ?')
+      .run(Math.round(newBaseShares * 10000) / 10000, newBasePrice, base.id);
+
+    res.json({ success: true, mode: 'fix_base', baseShares: newBaseShares, basePrice: newBasePrice });
+    return;
+  }
+
+  // 模式一（默认）：生成调整交易
   const row = db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
@@ -107,31 +163,21 @@ router.post('/:id/adjust', (req: Request, res: Response) => {
 
     if (Math.abs(sharesDiff) > 0.0001 || Math.abs(costDiff) > 0.01) {
       if (sharesDiff > 0) {
-        // Need more shares → insert a buy adjustment
         const price = costDiff / sharesDiff;
         db.prepare(
           'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(id, today, 'buy', asset, Math.round(sharesDiff * 10000) / 10000, Math.round(price * 10000) / 10000, '持仓调整');
       } else if (sharesDiff < 0) {
-        // Need fewer shares → insert a sell adjustment
         const price = Math.abs(costDiff / sharesDiff);
         db.prepare(
           'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(id, today, 'sell', asset, Math.round(Math.abs(sharesDiff) * 10000) / 10000, Math.round(price * 10000) / 10000, '持仓调整');
       } else {
-        // Same shares, different cost → adjust via a tiny buy/sell pair
-        // Add a buy at the target nav, and sell the same at old nav
-        // Simpler: just add a dividend adjustment for the cost difference
         if (costDiff > 0) {
           db.prepare(
             'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
           ).run(id, today, 'dividend', asset, 0, Math.round(costDiff * 100) / 100, '净值调整');
         } else {
-          // Negative adjustment: add a sell of 0 shares... not valid.
-          // Use a buy with 0 shares at negative? No. Just do a tiny buy+sell.
-          // Actually: add a buy at higher price then sell at lower to reduce cost basis
-          // Simplest: just create a correction buy with negative-ish math
-          // Let's use: buy 0.0001 shares at costDiff/0.0001 price
           const fakeShares = 0.0001;
           db.prepare(
             'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -141,7 +187,91 @@ router.post('/:id/adjust', (req: Request, res: Response) => {
     }
   })();
 
-  res.json({ success: true });
+  res.json({ success: true, mode: 'transaction' });
+});
+
+// 修改当前盈亏：根据盈亏自动反推持仓成本，调整底仓
+router.post('/:id/gain', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { gain } = req.body;
+
+  if (gain == null) {
+    res.status(400).json({ error: '需要 gain（盈亏金额）' });
+    return;
+  }
+
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id) as any;
+  if (!fund) {
+    res.status(404).json({ error: 'Fund not found' });
+    return;
+  }
+
+  if (!fund.market_nav || fund.market_nav <= 0) {
+    res.status(400).json({ error: '请先设置当前市场净值（market_nav），才能根据盈亏计算成本' });
+    return;
+  }
+
+  // 计算当前持仓份额
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares
+    FROM transactions WHERE fund_id = ?
+  `).get(id) as any;
+
+  const holdingShares = row.holding_shares;
+  if (holdingShares <= 0) {
+    res.status(400).json({ error: '当前无持仓份额，无法调整盈亏' });
+    return;
+  }
+
+  // 目标成本 = 市值 - 盈亏
+  const marketValue = holdingShares * fund.market_nav;
+  const targetCost = marketValue - gain;
+  const targetNav = targetCost / holdingShares;
+
+  // 查找历史持仓底仓记录
+  const base = db.prepare(
+    "SELECT * FROM transactions WHERE fund_id = ? AND notes LIKE '%历史持仓%' AND type = 'buy' ORDER BY id LIMIT 1"
+  ).get(id) as any;
+
+  if (!base) {
+    res.status(400).json({ error: '未找到历史持仓记录，无法自动调整。请使用持仓调整功能。' });
+    return;
+  }
+
+  // 计算除底仓外的其他交易贡献
+  const others = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as net_shares,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+      COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as net_cost
+    FROM transactions WHERE fund_id = ? AND id != ?
+  `).get(id, base.id) as any;
+
+  const newBaseShares = holdingShares - others.net_shares;
+  const newBaseCost = targetCost - others.net_cost;
+
+  if (newBaseShares <= 0) {
+    res.status(400).json({ error: `修正后底仓份额为 ${newBaseShares.toFixed(2)}，不合理。` });
+    return;
+  }
+
+  const newBasePrice = Math.round((newBaseCost / newBaseShares) * 10000) / 10000;
+
+  db.prepare('UPDATE transactions SET shares = ?, price = ? WHERE id = ?')
+    .run(Math.round(newBaseShares * 10000) / 10000, newBasePrice, base.id);
+
+  res.json({
+    success: true,
+    gain,
+    targetCost: Math.round(targetCost * 100) / 100,
+    targetNav: Math.round(targetNav * 10000) / 10000,
+    baseShares: Math.round(newBaseShares * 10000) / 10000,
+    basePrice: newBasePrice,
+  });
 });
 
 router.delete('/:id', (req: Request, res: Response) => {

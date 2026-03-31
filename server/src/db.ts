@@ -51,9 +51,11 @@ const migrations = [
   'ALTER TABLE funds ADD COLUMN market_nav REAL DEFAULT 0',
   'ALTER TABLE funds ADD COLUMN stop_profit_pct REAL DEFAULT 5',
   'ALTER TABLE funds ADD COLUMN stop_loss_pct REAL DEFAULT 5',
+  "ALTER TABLE funds ADD COLUMN code TEXT DEFAULT ''",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_funds_code ON funds(code) WHERE code != ''",
 ];
 for (const sql of migrations) {
-  try { db.exec(sql); } catch (_) { /* column already exists */ }
+  try { db.exec(sql); } catch (_) { /* column/index already exists */ }
 }
 
 export default db;

@@ -12,6 +12,12 @@ function pct(n: number) {
   return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'
 }
 
+const typeConfig = {
+  buy:      { label: '买入',  bg: 'bg-emerald-50',  text: 'text-emerald-700', border: 'border-emerald-200', icon: '↑' },
+  sell:     { label: '卖出',  bg: 'bg-red-50',      text: 'text-red-700',     border: 'border-red-200',     icon: '↓' },
+  dividend: { label: '分红',  bg: 'bg-amber-50',    text: 'text-amber-700',   border: 'border-amber-200',   icon: '$' },
+}
+
 export default function Funds() {
   const navigate = useNavigate()
   const [funds, setFunds] = useState<Fund[]>([])
@@ -19,11 +25,76 @@ export default function Funds() {
   const [editId, setEditId] = useState<number | null>(null)
   const [name, setName] = useState('')
   const [color, setColor] = useState('#378ADD')
+  const [code, setCode] = useState('')
+  const [codeVerify, setCodeVerify] = useState<string | null>(null)
+  const [codeLoading, setCodeLoading] = useState(false)
   const [deleteId, setDeleteId] = useState<number | null>(null)
   const [error, setError] = useState('')
 
+  // 添加交易相关状态
+  const [txFundId, setTxFundId] = useState<number | null>(null)
+  const [txForm, setTxForm] = useState({ date: '', type: 'buy' as 'buy' | 'sell' | 'dividend', inputMode: 'amount' as 'shares' | 'amount', value: 0, price: 0, notes: '' })
+  const [txNavLoading, setTxNavLoading] = useState(false)
+  const [txNavHint, setTxNavHint] = useState('')
+  const [txError, setTxError] = useState('')
+
   const load = () => api.getFunds().then(setFunds)
   useEffect(() => { load() }, [])
+
+  const txAutoFetchNav = async (fundId: number, date: string, type: string) => {
+    if (type === 'dividend' || !fundId || !date) { setTxNavHint(''); return }
+    const fund = funds.find(f => f.id === fundId)
+    if (!fund?.code) { setTxNavHint('该基金无代码，无法自动获取净值'); return }
+    setTxNavLoading(true)
+    setTxNavHint('')
+    try {
+      const result = await api.getNavByDate(fund.code, date)
+      setTxForm(f => ({ ...f, price: result.nav }))
+      setTxNavHint(result.note ? `${result.date} 净值 ${result.nav}（${result.note}）` : `${result.date} 净值 ${result.nav}`)
+    } catch {
+      setTxNavHint('未查到该日期净值')
+    } finally {
+      setTxNavLoading(false)
+    }
+  }
+
+  const openTxForm = (fund: Fund) => {
+    setTxFundId(fund.id)
+    setTxForm({ date: new Date().toISOString().slice(0, 10), type: 'buy', inputMode: 'amount', value: 0, price: 0, notes: '' })
+    setTxNavHint('')
+    setTxError('')
+    // 自动获取今日净值
+    if (fund.code) {
+      const today = new Date().toISOString().slice(0, 10)
+      setTimeout(() => txAutoFetchNav(fund.id, today, 'buy'), 0)
+    }
+  }
+
+  const handleTxSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setTxError('')
+    const fund = funds.find(f => f.id === txFundId)
+    if (!fund || !txForm.date) { setTxError('请填写日期'); return }
+
+    let shares = 0, price = txForm.price
+    if (txForm.type === 'dividend') {
+      price = txForm.value
+    } else if (txForm.inputMode === 'shares') {
+      shares = txForm.value
+    } else {
+      // 金额模式
+      if (price <= 0) { setTxError('净值未获取到，无法计算份额'); return }
+      shares = Math.round((txForm.value / price) * 10000) / 10000
+    }
+
+    try {
+      await api.createTransaction({ fund_id: fund.id, date: txForm.date, type: txForm.type, asset: fund.name, shares, price, notes: txForm.notes || '' })
+      setTxFundId(null)
+      load()
+    } catch (err: any) {
+      setTxError(err.message)
+    }
+  }
 
   const totalValue = funds.reduce((s, f) => s + f.current_value, 0)
 
@@ -33,14 +104,16 @@ export default function Funds() {
     if (!name.trim()) { setError('请输入基金名称。'); return }
     try {
       if (editId) {
-        await api.updateFund(editId, { name, color })
+        await api.updateFund(editId, { name, color, code })
       } else {
-        await api.createFund({ name, color })
+        await api.createFund({ name, color, code })
       }
       setShowForm(false)
       setEditId(null)
       setName('')
       setColor('#378ADD')
+      setCode('')
+      setCodeVerify(null)
       load()
     } catch (err: any) {
       setError(err.message)
@@ -50,8 +123,25 @@ export default function Funds() {
   const startEdit = (f: Fund) => {
     setName(f.name)
     setColor(f.color)
+    setCode(f.code || '')
+    setCodeVerify(null)
     setEditId(f.id)
     setShowForm(true)
+  }
+
+  const verifyCode = async () => {
+    if (!code.trim()) return
+    setCodeLoading(true)
+    setCodeVerify(null)
+    try {
+      const result = await api.getLatestNav(code.trim())
+      setCodeVerify(`${result.name}（最新净值: ${result.nav}，${result.date}）`)
+      if (!name.trim()) setName(result.name)
+    } catch {
+      setCodeVerify('未找到该基金代码')
+    } finally {
+      setCodeLoading(false)
+    }
   }
 
   const handleDelete = async () => {
@@ -73,7 +163,7 @@ export default function Funds() {
           </p>
         </div>
         <button
-          onClick={() => { setShowForm(true); setEditId(null); setName(''); setColor('#378ADD') }}
+          onClick={() => { setShowForm(true); setEditId(null); setName(''); setColor('#378ADD'); setCode(''); setCodeVerify(null) }}
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
@@ -91,22 +181,38 @@ export default function Funds() {
               {error}
             </div>
           )}
-          <div className="flex flex-col sm:flex-row gap-4 items-end">
-            <div className="flex-1 w-full">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">基金名称</label>
-              <input value={name} onChange={e => setName(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow" placeholder="例如：稳健理财" required />
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row gap-4 items-end">
+              <div className="flex-1 w-full">
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">基金代码</label>
+                <div className="flex gap-2">
+                  <input value={code} onChange={e => { setCode(e.target.value); setCodeVerify(null) }} className="flex-1 border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow" placeholder="例如：012414" />
+                  <button type="button" onClick={verifyCode} disabled={codeLoading || !code.trim()} className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors disabled:opacity-50">
+                    {codeLoading ? '查询中...' : '验证'}
+                  </button>
+                </div>
+                {codeVerify && (
+                  <p className={`text-xs mt-1.5 ${codeVerify.includes('未找到') ? 'text-red-500' : 'text-green-600'}`}>{codeVerify}</p>
+                )}
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">颜色</label>
-              <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-[42px] w-16 border border-gray-300 rounded-lg cursor-pointer p-1" />
-            </div>
-            <div className="flex gap-2">
-              <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">
-                {editId ? '保存' : '创建'}
-              </button>
-              <button type="button" onClick={() => { setShowForm(false); setEditId(null) }} className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors">
-                取消
-              </button>
+            <div className="flex flex-col sm:flex-row gap-4 items-end">
+              <div className="flex-1 w-full">
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">基金名称</label>
+                <input value={name} onChange={e => setName(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow" placeholder="例如：稳健理财（验证代码可自动填入）" required />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">颜色</label>
+                <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-[42px] w-16 border border-gray-300 rounded-lg cursor-pointer p-1" />
+              </div>
+              <div className="flex gap-2">
+                <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">
+                  {editId ? '保存' : '创建'}
+                </button>
+                <button type="button" onClick={() => { setShowForm(false); setEditId(null) }} className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors">
+                  取消
+                </button>
+              </div>
             </div>
           </div>
         </form>
@@ -138,7 +244,7 @@ export default function Funds() {
                       </div>
                       <div>
                         <h3 className="font-semibold text-gray-900">{f.name}</h3>
-                        <span className="text-xs text-gray-400">占比 {alloc.toFixed(1)}%</span>
+                        <span className="text-xs text-gray-400">{f.code ? f.code + ' · ' : ''}占比 {alloc.toFixed(1)}%</span>
                       </div>
                     </div>
                     <div className="flex gap-1">
@@ -187,14 +293,92 @@ export default function Funds() {
                     </div>
                   </div>
 
-                  {/* Manage button */}
-                  <button
-                    onClick={() => navigate(`/funds/${f.id}`)}
-                    className="mt-4 w-full py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors flex items-center justify-center gap-1.5"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
-                    管理
-                  </button>
+                  {/* Action buttons */}
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      onClick={() => openTxForm(f)}
+                      className="flex-1 py-2 text-sm font-medium text-emerald-600 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                      添加交易
+                    </button>
+                    <button
+                      onClick={() => navigate(`/funds/${f.id}`)}
+                      className="flex-1 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                      管理
+                    </button>
+                  </div>
+
+                  {/* Inline transaction form */}
+                  {txFundId === f.id && (
+                    <form onSubmit={handleTxSubmit} className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                      {txError && <div className="text-xs text-red-600 bg-red-50 rounded-lg p-2">{txError}</div>}
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <label className="block text-xs text-gray-500 mb-1">日期 {txNavLoading && <span className="text-blue-500">查询中...</span>}</label>
+                          <input type="date" value={txForm.date} onChange={e => { setTxForm({ ...txForm, date: e.target.value }); txAutoFetchNav(f.id, e.target.value, txForm.type) }}
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" required />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">类型</label>
+                          <div className="flex gap-1">
+                            {(['buy', 'sell', 'dividend'] as const).map(t => {
+                              const cfg = typeConfig[t]
+                              return (
+                                <button key={t} type="button" onClick={() => { setTxForm({ ...txForm, type: t }); if (t !== 'dividend' && txForm.date) txAutoFetchNav(f.id, txForm.date, t) }}
+                                  className={`px-2.5 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                                    txForm.type === t ? `${cfg.bg} ${cfg.text} ${cfg.border}` : 'bg-white text-gray-400 border-gray-200'
+                                  }`}>{cfg.label}</button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                      {txNavHint && <p className="text-xs text-blue-600">{txNavHint}</p>}
+                      {txForm.type !== 'dividend' ? (
+                        <div className="space-y-2">
+                          <div className="flex gap-1">
+                            <button type="button" onClick={() => setTxForm({ ...txForm, inputMode: 'amount' })}
+                              className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors ${txForm.inputMode === 'amount' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200'}`}>按金额</button>
+                            <button type="button" onClick={() => setTxForm({ ...txForm, inputMode: 'shares' })}
+                              className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors ${txForm.inputMode === 'shares' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-gray-400 border-gray-200'}`}>按份额</button>
+                          </div>
+                          <div className="relative">
+                            <span className="absolute left-3 top-2 text-gray-400 text-sm">{txForm.inputMode === 'amount' ? '¥' : '份'}</span>
+                            <input type="number" step="any" value={txForm.value || ''} onChange={e => setTxForm({ ...txForm, value: Number(e.target.value) })}
+                              placeholder={txForm.inputMode === 'amount' ? '输入金额' : '输入份额'}
+                              className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                          </div>
+                          {txForm.value > 0 && txForm.price > 0 && (
+                            <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2">
+                              净值 {txForm.price.toFixed(4)} &middot;
+                              {txForm.inputMode === 'amount'
+                                ? <>份额 {(txForm.value / txForm.price).toFixed(4)} &middot; 金额 {fmt(txForm.value)}</>
+                                : <>份额 {txForm.value} &middot; 金额 {fmt(txForm.value * txForm.price)}</>
+                              }
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <span className="absolute left-3 top-2 text-gray-400 text-sm">¥</span>
+                          <input type="number" step="any" value={txForm.value || ''} onChange={e => setTxForm({ ...txForm, value: Number(e.target.value) })}
+                            placeholder="分红金额"
+                            className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <button type="submit" className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors">
+                          确认
+                        </button>
+                        <button type="button" onClick={() => setTxFundId(null)} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors">
+                          取消
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
               </div>
             )

@@ -36,20 +36,75 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 router.post('/', (req: Request, res: Response) => {
-  const { fund_id, date, type, asset, shares, price, notes } = req.body;
-  if (!fund_id || !date || !type || !asset) {
-    res.status(400).json({ error: 'fund_id, date, type, and asset are required' });
+  const { fund_id, date, type, shares, price, notes } = req.body;
+  let { asset } = req.body;
+  if (!fund_id || !date || !type) {
+    res.status(400).json({ error: 'fund_id, date, type are required' });
     return;
   }
-  const result = db.prepare(
-    'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(fund_id, date, type, asset, shares || 0, price || 0, notes || null);
+
+  // asset 为空时自动使用基金名称
+  if (!asset) {
+    const fundRow = db.prepare('SELECT name FROM funds WHERE id = ?').get(fund_id) as any;
+    if (!fundRow) {
+      res.status(400).json({ error: '基金不存在' });
+      return;
+    }
+    asset = fundRow.name;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const isHistorical = date < today;
+
+  const result = db.transaction(() => {
+    const ins = db.prepare(
+      'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(fund_id, date, type, asset, shares || 0, price || 0, notes || null);
+
+    // 历史交易：调整底仓使当前持仓不变
+    if (isHistorical) {
+      const base = db.prepare(
+        "SELECT * FROM transactions WHERE fund_id = ? AND notes LIKE '%历史持仓%' AND type = 'buy' ORDER BY id LIMIT 1"
+      ).get(fund_id) as any;
+
+      if (base) {
+        const baseShares = base.shares as number;
+        const baseCost = base.shares * base.price;
+        let newBaseShares = baseShares;
+        let newBaseCost = baseCost;
+
+        if (type === 'buy') {
+          // 新增历史买入 → 底仓减少对应份额和成本
+          newBaseShares = baseShares - (shares || 0);
+          newBaseCost = baseCost - (shares || 0) * (price || 0);
+        } else if (type === 'sell') {
+          // 新增历史卖出 → 底仓增加份额，成本增加卖出金额
+          newBaseShares = baseShares + (shares || 0);
+          newBaseCost = baseCost + (shares || 0) * (price || 0);
+        } else if (type === 'dividend') {
+          // 新增历史分红 → 底仓成本减少分红金额
+          newBaseCost = baseCost - (price || 0);
+        }
+
+        if (newBaseShares > 0.0001) {
+          const newBasePrice = Math.round((newBaseCost / newBaseShares) * 10000) / 10000;
+          db.prepare('UPDATE transactions SET shares = ?, price = ? WHERE id = ?')
+            .run(Math.round(newBaseShares * 10000) / 10000, newBasePrice, base.id);
+        } else if (newBaseShares <= 0.0001) {
+          // 底仓已耗尽，删除底仓记录
+          db.prepare('DELETE FROM transactions WHERE id = ?').run(base.id);
+        }
+      }
+    }
+
+    return ins.lastInsertRowid;
+  })();
 
   const tx = db.prepare(`
     SELECT t.*, f.name as fund_name, f.color as fund_color
     FROM transactions t JOIN funds f ON f.id = t.fund_id
     WHERE t.id = ?
-  `).get(result.lastInsertRowid);
+  `).get(result);
   res.status(201).json(tx);
 });
 
