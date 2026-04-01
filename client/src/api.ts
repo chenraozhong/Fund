@@ -157,6 +157,157 @@ export interface AiAdvice {
   total_value: number;
 }
 
+export interface DailySnapshot {
+  date: string;
+  holding_shares: number;
+  total_cost: number;
+  market_value: number;
+  cost_nav: number;
+  market_nav: number;
+  gain: number;
+  gain_pct: number;
+}
+
+export interface BatchDecision {
+  fundId: number;
+  name: string;
+  code: string;
+  color: string;
+  nav: number;
+  action: 'buy' | 'sell' | 'hold';
+  shares: number;
+  amount: number;
+  summary: string;
+  confidence: number;
+  compositeScore?: number;
+  urgency?: 'high' | 'medium' | 'low';
+  position?: {
+    holdingShares: number;
+    costNav: number;
+    gainPct: number;
+    baseShares: number;
+    swingShares: number;
+    marketValue: number;
+  };
+  masterSignals?: {
+    fearGreed: number;
+    cyclePhase: string;
+    cycleLabel: string;
+    baseFactor: number;
+  };
+  dimensions?: {
+    technical: { score: number; trend: string; rsi: number };
+    fundamental: { score: number; highlights: string[] };
+    news: { score: number; sentiment: string };
+  };
+  capitalFlow?: {
+    flowScore: number;
+    flowLabel: string;
+    sector: { name: string; mainNetInflow: number; mainPct: number } | null;
+    latestMarket: { mainNetInflow: number } | null;
+    latestNorthbound: { netBuy: number } | null;
+  };
+  reasoning?: string[];
+}
+
+export interface ForecastResult {
+  fundName: string;
+  currentNav: number;
+  prediction: {
+    direction: 'up' | 'down' | 'sideways';
+    predictedNav: number;
+    predictedChangePct: number;
+    navRange: { high: number; low: number };
+    confidence: number;
+  };
+  strategy: {
+    action: 'buy' | 'sell' | 'hold';
+    shares: number;
+    amount: number;
+    strategies: string[];
+  };
+  factors: Record<string, { value: number; label: string; [k: string]: any }>;
+  position: { holdingShares: number; costNav: number; gainPct: number; baseShares: number; swingShares: number };
+  stats: { recent20: { upDays: number; downDays: number; avgUp: number; avgDown: number }; volatility: number; atrPct: number };
+  reasoning: string[];
+  fundamentalHighlights: string[];
+  timestamp: string;
+  message?: string;
+}
+
+export interface BatchForecast {
+  direction: 'up' | 'down' | 'sideways';
+  predictedNav: number;
+  predictedChangePct: number;
+  confidence: number;
+  navRange: { high: number; low: number };
+  rsi: number;
+  trend: string;
+  volatility: number;
+  flowScore?: number;
+  flowLabel?: string;
+}
+
+export interface EstimateData {
+  gsz: number;
+  gszzl: number;
+  gztime: string;
+  dwjz: number;
+  name: string;
+  officialNav: number;
+  officialDate: string;
+  prevNav: number;
+}
+
+export interface ForecastReviewSummary {
+  stats: {
+    total: number;
+    correct: number;
+    accuracy: number;
+    avgError: number;
+    inRange: number;
+    inRangePct: number;
+  };
+  byFund: {
+    fund_id: number;
+    name: string;
+    code: string;
+    color: string;
+    total: number;
+    correct: number;
+    accuracy: number;
+    avg_error: number;
+    inRangePct: number;
+  }[];
+  factorAccuracy: {
+    factor: string;
+    label: string;
+    total: number;
+    correct: number;
+    accuracy: number;
+  }[];
+  recent: {
+    id: number;
+    fund_id: number;
+    fund_name: string;
+    fund_code: string;
+    fund_color: string;
+    target_date: string;
+    direction: string;
+    predicted_nav: number;
+    predicted_change_pct: number;
+    confidence: number;
+    actual_nav: number;
+    actual_change_pct: number;
+    direction_correct: number;
+    error_pct: number;
+    within_range: number;
+    analysis: string;
+    factorsParsed: Record<string, number>;
+  }[];
+  days: number;
+}
+
 export interface StrategySignal {
   source: string;
   type: 'buy' | 'sell' | 'hold';
@@ -267,6 +418,37 @@ export const api = {
   updateFundGain: (id: number, gain: number) =>
     request<{ success: boolean; gain: number; targetCost: number; targetNav: number }>(`/funds/${id}/gain`, { method: 'POST', body: JSON.stringify({ gain }) }),
   getFundAdvice: (id: number) => request<AiAdvice>(`/ai/funds/${id}/advice`),
+  getFundResearch: (id: number) => request<{
+    fundamental: {
+      name: string; type: string; rate: string; manager: string; managerDays: string; managerReturn: string;
+      performance: string; assetAlloc: string; topHoldings: string; holderStructure: string; scale: string;
+    } | null;
+    news: { title: string; date: string; source: string; url: string }[];
+    sectorKeyword: string;
+    position: { holdingShares: number; costNav: number; marketNav: number; gainPct: number };
+    analysis: string | null;
+    error?: string;
+    generated_at?: string;
+  }>(`/ai/funds/${id}/research`),
+  getDecision: (id: number, nav: number) => request<{
+    nav: number; action: 'buy' | 'sell' | 'hold'; shares: number; amount: number;
+    confidence: number; urgency: 'high' | 'medium' | 'low'; summary: string; compositeScore: number;
+    position: { holdingShares: number; costNav: number; gainPct: number; baseShares: number; swingShares: number; marketValue: number };
+    impact: { newShares: number; newCostNav: number; costChange: number };
+    cycle: {
+      step1: { action: string; nav: number; shares: number; amount: number };
+      step2: { action: string; nav: number; shares: number; amount: number };
+      cycleCostDrop: number; cycleProfit: number; newCostNavAfterCycle: number;
+    } | null;
+    dimensions: {
+      technical: { score: number; trend: string; rsi: number; signals: string[] };
+      fundamental: { score: number; highlights: string[] };
+      news: { score: number; sentiment: string; bullish: string[]; bearish: string[] };
+    };
+    reasoning: string[];
+    timestamp: string;
+  }>(`/strategy/funds/${id}/decision?nav=${nav}`),
+  getForecast: (id: number) => request<ForecastResult>(`/strategy/funds/${id}/forecast`),
   getFundStrategy: (id: number) => request<StrategyResult>(`/strategy/funds/${id}`),
   getQuickAdvice: (id: number, realtimeNav: number) => request<StrategyResult>(`/strategy/funds/${id}?nav=${realtimeNav}`),
   getSwingAdvice: (id: number, nav: number) => request<{
@@ -291,6 +473,9 @@ export const api = {
   getSummary: () => request<Summary>('/stats/summary'),
   getPerformance: () => request<PerformanceData>('/stats/performance'),
   getAllocation: () => request<Allocation[]>('/stats/allocation'),
+  recordSnapshot: () => request<{ success: boolean; count: number }>('/stats/snapshot', { method: 'POST' }),
+  getSnapshots: (fundId: number, days?: number) =>
+    request<DailySnapshot[]>(`/stats/snapshots/${fundId}${days ? `?days=${days}` : ''}`),
 
   getEstimateAll: () => request<Record<number, { gsz: number; gszzl: number; gztime: string; dwjz: number; name: string }>>('/nav/estimate/all'),
   getLatestNav: (code: string) => request<NavLatest>(`/nav/${code}/latest`),
@@ -300,4 +485,14 @@ export const api = {
     const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
     return request<NavHistory>(`/nav/${code}/history${qs}`);
   },
+  getBatchDecisions: (estimates: Record<number, number>) =>
+    request<BatchDecision[]>(`/strategy/decisions/all?estimates=${encodeURIComponent(JSON.stringify(estimates))}`),
+  getBatchForecasts: () =>
+    request<Record<number, BatchForecast>>('/strategy/forecasts/all'),
+  getForecastReviewSummary: (days?: number) =>
+    request<ForecastReviewSummary>(`/strategy/forecast-reviews/summary${days ? `?days=${days}` : ''}`),
+  runForecastReview: () =>
+    request<{ success: boolean; reviewed: number }>('/strategy/forecast-reviews/run', { method: 'POST' }),
+  getFundForecastHistory: (fundId: number, limit?: number) =>
+    request<any[]>(`/strategy/forecasts/fund/${fundId}${limit ? `?limit=${limit}` : ''}`),
 };

@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
+import { fetchFundamental, fetchFundHoldings, fetchSectorNews, fetchRedeemFees, getRedeemFeeRate, inferSectorKeyword, scoreNewsSentiment, scoreFundamental, checkSectorExposure, fetchCapitalFlow } from '../datasource';
+import type { CapitalFlowData } from '../datasource';
 
 const router = Router();
 
@@ -896,8 +898,8 @@ router.get('/funds/:id', async (req: Request, res: Response) => {
   const marketValue = mNav > 0 ? holdingShares * mNav : totalCost;
   const gain = marketValue - totalCost;
   const gainPct = totalCost > 0 ? (gain / totalCost) * 100 : 0;
-  const stopProfit = fund.stop_profit_pct || 5;
-  const stopLoss = fund.stop_loss_pct || 5;
+  const stopProfit = fund.stop_profit_pct || 20;
+  const stopLoss = fund.stop_loss_pct || 15;
 
   // 获取历史净值（60日）
   let navHistory: NavPoint[] = [];
@@ -1321,6 +1323,1580 @@ router.get('/funds/:id/swing', async (req: Request, res: Response) => {
       costReduction: r4(costNav - newCostNav),
     },
   });
+});
+
+// ============================================================
+// 统一决策引擎：完整循环降成本模型
+//
+// 核心数学：
+//   只卖不买 → costNav 不变（份额和成本等比减少）
+//   真正降成本 = 高卖 + 低买回 = 一个完整循环
+//   循环降成本 = opShares × (sellNav - buyNav) / holdingShares
+//
+// 所以每次操作都附带"闭环计划"：
+//   卖出 → 预设买回价和份额 → 算循环完成后的成本降幅
+//   买入 → 预设卖出价和份额 → 算循环完成后的成本降幅
+// ============================================================
+
+// 完整决策引擎核心函数（单基金）
+async function computeDecision(fundId: number | string, realtimeNav: number): Promise<any> {
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+  if (!fund) throw new Error('基金不存在');
+
+  const nav = realtimeNav > 0 ? realtimeNav : (fund.market_nav || 0);
+  if (nav <= 0) throw new Error('需要提供净值');
+
+  // === 1. 持仓数据 ===
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+      COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as cost_basis
+    FROM transactions WHERE fund_id = ?
+  `).get(fundId) as any;
+
+  const holdingShares = row.holding_shares;
+  const totalCost = row.cost_basis;
+  // [Fix#3] costNav<=0 时视为0（已回本或无持仓），避免gainPct符号反转
+  const costNav = holdingShares > 0 && totalCost > 0 ? totalCost / holdingShares : 0;
+  const gainPct = costNav > 0 ? ((nav - costNav) / costNav) * 100 : 0;
+  const stopProfit = fund.stop_profit_pct || 20;
+  const stopLoss = fund.stop_loss_pct || 15;
+
+  const basePositionPct = fund.base_position_pct ?? 30;
+  const baseShares = r4(holdingShares * basePositionPct / 100);
+  const swingShares = r4(holdingShares - baseShares);
+  const marketValue = holdingShares * nav;
+
+  // 底仓因子：底仓占比高→活仓少→需要更积极买入补充活仓弹药
+  const baseFactor = basePositionPct >= 60 ? 1.5
+    : basePositionPct >= 40 ? 1.2
+    : basePositionPct >= 20 ? 1.0
+    : 0.8;
+  // 卖出谨慎因子：底仓占比高→活仓少→每次卖出比例缩小
+  const sellCaution = basePositionPct <= 30 ? 1.0
+    : basePositionPct <= 50 ? 0.8
+    : basePositionPct <= 70 ? 0.6
+    : 0.4;
+
+  // === 2. 并行获取：技术面 + 基本面 + 消息面 + 资金流向 ===
+  let navHistory: NavPoint[] = [];
+  let fundamental = null;
+  let holdings = null;
+  let redeemFeeLevels: { minDays: number; maxDays: number; feeRate: number; label: string }[] = [];
+  let news: { title: string; date: string; source: string; url: string }[] = [];
+  const _cf: { v: CapitalFlowData | null } = { v: null };
+
+  const sectorKeyword = inferSectorKeyword(fund.name);
+  const promises: Promise<void>[] = [];
+  if (fund.code) {
+    promises.push(fetchNavHistory(fund.code, 60).then(h => { navHistory = h; }));
+    promises.push(fetchFundamental(fund.code).then(f => { fundamental = f; }));
+    promises.push(fetchFundHoldings(fund.code).then(h => { holdings = h; }));
+    promises.push(fetchRedeemFees(fund.code).then(f => { redeemFeeLevels = f; }));
+  }
+  promises.push(fetchSectorNews(sectorKeyword, 8).then(n => { news = n; }));
+  promises.push(fetchCapitalFlow(fund.name).then(cf => { _cf.v = cf; }));
+  await Promise.all(promises);
+  const capitalFlow = _cf.v;
+
+  const navValues = navHistory.map(p => p.nav);
+  const effectiveNav = navValues.length > 0 ? navValues[navValues.length - 1] : nav;
+
+  // === 3. 四维评分（新增资金流向维度） ===
+  const technical = navValues.length >= 5 ? calcTechnical(navValues) : calcTechnical(effectiveNav > 0 ? [effectiveNav] : [1]);
+  const riskMetrics = calcRisk(navValues);
+  const market = await fetchMarketContext(fund.name);
+  const signals = generateSignals(technical, riskMetrics, market, nav, costNav, gainPct, stopProfit, stopLoss);
+  const techScore = calcCompositeScore(signals, technical, market);
+  const fundScore = fundamental ? scoreFundamental(fundamental) : { score: 0, highlights: ['无基金代码，跳过基本面'] };
+  const newsScore = scoreNewsSentiment(news);
+  const flowScore = capitalFlow?.flowScore ?? 0;
+  // 四维综合评分：技术50% + 基本面15% + 消息面15% + 资金流向20%
+  const compositeScore = Math.round(techScore * 0.5 + fundScore.score * 0.15 + newsScore.score * 0.15 + flowScore * 0.2);
+
+  // ================================================================
+  // 投资大师策略融合 (v2 - 四方辩论优化版)
+  //
+  // Buffett/Graham : 恐惧时贪婪，安全边际越大买越多（价值平均）
+  // Livermore/O'Neil: 顺趋势操作，上升趋势中回调买入最强
+  // Soros/Druckenmiller: 高确信重仓，低确信轻仓，错了快跑
+  // Howard Marks   : 识别周期位置，底部区域积极，顶部区域谨慎
+  // 彼得林奇       : 了解你买的东西，基本面好的跌了就是机会
+  //
+  // v2 修正（来自四方辩论）：
+  //  [量化] 恐惧贪婪回撤用sqrt非线性，防止单因子锁死
+  //  [多头] capitulation放宽至drawdown>10&&RSI<35
+  //  [熊派] 单次金额上限15%市值，distribution卖60%
+  //  [场景] 动态止盈=max(ATR*3, 8%)，网格阶梯卖出
+  //  [量化] 价值平均改分段函数，中度区间放大更显著
+  //  [量化] 买入闭环卖出目标改ATR阶梯，不锚定costNav
+  //  [量化] conviction增加中间档1.3
+  // ================================================================
+
+  const atrPct = nav > 0 && technical.atr14 > 0 ? (technical.atr14 / nav) * 100 : 1;
+
+  // === A. 恐惧/贪婪指数 (Buffett) ===
+  // [量化修正] 回撤用 sqrt 非线性化，防止单因子主导
+  let fearGreed = 50;
+  fearGreed += (technical.rsi14 - 50) * 0.4;                                    // RSI 30→-8, 70→+8
+  fearGreed -= Math.sqrt(Math.max(riskMetrics.currentDrawdown, 0)) * 4;         // 回撤10%→-12.6, 20%→-17.9（非线性）
+  fearGreed -= Math.max(0, riskMetrics.volatility20d - 15) * 0.3;
+  fearGreed += newsScore.score * 0.15;
+  fearGreed += technical.trendScore * 0.12;
+  fearGreed += flowScore * 0.12;                                                // 资金流入→贪婪，流出→恐惧
+  fearGreed = Math.max(0, Math.min(100, Math.round(fearGreed)));
+
+  // [多头修正] contrarian 上限提升到 2.5
+  const contrarian = fearGreed < 25 ? 1.5 + (25 - fearGreed) / 25 * 1.0        // 最高2.5
+                   : fearGreed > 75 ? 1.5 + (fearGreed - 75) / 25 * 1.0
+                   : 1.0;
+
+  // === B. 周期定位 (Howard Marks) ===
+  type CyclePhase = 'capitulation' | 'early_recovery' | 'recovery' | 'expansion' | 'euphoria' | 'distribution' | 'decline';
+  let cyclePhase: CyclePhase = 'recovery';
+
+  // [多头修正] capitulation 放宽：drawdown>10且RSI<35（原15+30太严）
+  if (riskMetrics.currentDrawdown > 10 && technical.rsi14 < 35) {
+    cyclePhase = 'capitulation';
+  // [多头修正] early_recovery: MACD histogram 收窄（>前一个值）也算，不必>0
+  } else if (riskMetrics.currentDrawdown > 6 && technical.rsi14 < 45 && technical.macd.histogram > technical.macd.dea * -0.5) {
+    cyclePhase = 'early_recovery';
+  } else if (technical.trend === 'up' && technical.rsi14 >= 40 && technical.rsi14 <= 60) {
+    cyclePhase = 'recovery';
+  } else if (technical.trend === 'strong_up' && technical.rsi14 > 60) {
+    cyclePhase = 'expansion';
+  // [熊派修正] euphoria 放宽：RSI>70或%B>85（原75+90太难触发）
+  } else if (technical.rsi14 > 70 || (technical.rsi14 > 65 && technical.bollingerBands.percentB > 85)) {
+    cyclePhase = 'euphoria';
+  } else if (technical.trend === 'sideways' && technical.macd.histogram < 0 && technical.rsi14 > 45) {
+    cyclePhase = 'distribution';
+  } else if (technical.trend === 'down' || technical.trend === 'strong_down') {
+    // [Fix#5] 兜底分支加RSI过滤，避免普通回调被误判为capitulation
+    cyclePhase = (riskMetrics.currentDrawdown > 12 && technical.rsi14 < 40) ? 'capitulation' : 'decline';
+  }
+
+  const cycleMultiplier: Record<CyclePhase, number> = {
+    capitulation: 2.0, early_recovery: 1.8, recovery: 1.2,
+    expansion: 0.8, euphoria: 0.5, distribution: 0.7, decline: 1.0,
+  };
+
+  // === C. 信念乘数 (Soros/Druckenmiller) ===
+  // [量化修正] 增加中间档 1.3
+  const dimSigns = [techScore > 10 ? 1 : techScore < -10 ? -1 : 0,
+                    fundScore.score > 10 ? 1 : fundScore.score < -10 ? -1 : 0,
+                    newsScore.score > 15 ? 1 : newsScore.score < -15 ? -1 : 0];
+  const allBull = dimSigns.every(s => s >= 0) && dimSigns.filter(s => s > 0).length >= 2;
+  const allBear = dimSigns.every(s => s <= 0) && dimSigns.filter(s => s < 0).length >= 2;
+  const singleStrong = dimSigns.filter(s => s !== 0).length === 1 && dimSigns.some(s => Math.abs(s) === 1);
+  // [Fix#2] conviction 区分方向：allBull→放大买入, allBear→放大卖出但缩小买入
+  // buyConviction 用于买入分支, sellConviction 用于卖出分支
+  const buyConviction = allBull ? 1.6 : allBear ? 0.5 : singleStrong ? 1.3
+    : dimSigns.filter(s => s === 0).length >= 2 ? 0.7 : 1.0;
+  const sellConviction = allBear ? 1.6 : allBull ? 0.5 : singleStrong ? 1.3
+    : dimSigns.filter(s => s === 0).length >= 2 ? 0.7 : 1.0;
+  const conviction = allBull || allBear ? 1.6 : singleStrong ? 1.3
+    : dimSigns.filter(s => s === 0).length >= 2 ? 0.7 : 1.0; // 用于显示
+
+  // === D. 价值平均 (Graham) ===
+  // [量化修正] 改分段函数，中度亏损区间放大更显著
+  const lossPctAbs = costNav > 0 ? Math.abs((nav - costNav) / costNav * 100) : 0;
+  let valueMultiplier = 1.0;
+  if (nav < costNav && costNav > 0) {
+    // 分段：亏5%→1.3x, 亏10%→1.6x, 亏20%→2.2x, 亏30%→2.8x, cap 4.0
+    if (lossPctAbs <= 5)       valueMultiplier = 1.0 + lossPctAbs * 0.06;      // 0→1.0, 5→1.3
+    else if (lossPctAbs <= 15) valueMultiplier = 1.3 + (lossPctAbs - 5) * 0.06; // 5→1.3, 15→1.9
+    else if (lossPctAbs <= 30) valueMultiplier = 1.9 + (lossPctAbs - 15) * 0.06; // 15→1.9, 30→2.8
+    else                       valueMultiplier = 2.8 + (lossPctAbs - 30) * 0.04; // 30→2.8, 55→3.8
+    valueMultiplier = Math.min(valueMultiplier, 4.0);
+  } else if (nav > costNav && costNav > 0) {
+    const profitAbs = (nav - costNav) / costNav * 100;
+    valueMultiplier = Math.min(1.0 + profitAbs * 0.04, 2.5);   // 盈利越多卖出越大
+  }
+
+  // === E. 基础金额 ===
+  const rawBase = Math.max(Math.round(totalCost * 0.08 / 100) * 100, 500);
+  const maxSingleAmount = Math.round(Math.max(totalCost, marketValue) * 0.15);
+
+  // === E2. 交易费用模型（自动获取真实费率）===
+  const FEE_SUBSCRIBE = 0.0015;   // 申购费0.15%（天天基金打折价）
+  const MIN_CYCLE_PROFIT_PCT = 1.0; // 扣费后最低循环利润率1%
+
+  // === E3. 持仓时间分析 ===
+  const recentBuy = db.prepare(
+    "SELECT date FROM transactions WHERE fund_id = ? AND type = 'buy' ORDER BY date DESC LIMIT 1"
+  ).get(fundId) as any;
+  const firstTx = db.prepare(
+    "SELECT date FROM transactions WHERE fund_id = ? ORDER BY date ASC LIMIT 1"
+  ).get(fundId) as any;
+  const daysSinceLastBuy = recentBuy
+    ? Math.round((Date.now() - new Date(recentBuy.date).getTime()) / 86400000)
+    : 999;
+  const daysSinceFirstTx = firstTx
+    ? Math.round((Date.now() - new Date(firstTx.date).getTime()) / 86400000)
+    : 0;
+  const txCount = (db.prepare("SELECT COUNT(*) as c FROM transactions WHERE fund_id = ?").get(fundId) as any)?.c || 0;
+  // 从真实费率阶梯查询当前赎回费率
+  const redeemFeeRate = redeemFeeLevels.length > 0
+    ? getRedeemFeeRate(redeemFeeLevels, daysSinceLastBuy)
+    : (daysSinceLastBuy < 7 ? 0.015 : daysSinceLastBuy < 30 ? 0.0075 : 0.005); // fallback
+  // 闭环买回的预估赎回费率（假设持有30天后卖出）
+  const FEE_REDEEM_CYCLE = redeemFeeLevels.length > 0
+    ? getRedeemFeeRate(redeemFeeLevels, 30) : 0.005;
+
+  // === E4. 总亏损熔断 [巴菲特+达利欧修正] ===
+  const totalLossPct = totalCost > 0 ? Math.max(0, (totalCost - marketValue) / totalCost * 100) : 0;
+  let circuitBreaker = false;
+  if (totalLossPct > 25) {
+    circuitBreaker = true; // 总亏损超25%，暂停所有买入
+  }
+
+  // === F. 动态止盈线 ===
+  const dynamicTakeProfit = Math.min(Math.max(atrPct * 3, 8), stopProfit);
+
+  // === G. 综合决策 ===
+  let action: 'buy' | 'sell' | 'hold' = 'hold';
+  let opShares = 0;
+  let opAmount = 0;
+  let confidence = 50;
+  let urgency: 'high' | 'medium' | 'low' = 'medium';
+  const reasoning: string[] = [];
+
+  const cycleLabel: Record<CyclePhase, string> = {
+    capitulation: '恐慌探底', early_recovery: '早期复苏', recovery: '稳步回升',
+    expansion: '加速上涨', euphoria: '过热狂热', distribution: '高位派发', decline: '下行调整',
+  };
+  // 持仓状态总结
+  const positionDesc = holdingShares > 0
+    ? `持仓${holdingShares.toFixed(0)}份（底仓${baseShares.toFixed(0)}+活仓${swingShares.toFixed(0)}），建仓${daysSinceFirstTx}天，共${txCount}笔交易`
+    : '空仓';
+  const holdTimeDesc = daysSinceLastBuy < 7 ? `最近买入仅${daysSinceLastBuy}天（赎回惩罚期，费率${(redeemFeeRate * 100).toFixed(2)}%）`
+    : daysSinceLastBuy < 30 ? `最近买入${daysSinceLastBuy}天（赎回费${(redeemFeeRate * 100).toFixed(2)}%）`
+    : daysSinceLastBuy < 365 ? `最近买入${daysSinceLastBuy}天（赎回费${(redeemFeeRate * 100).toFixed(2)}%）`
+    : daysSinceLastBuy < 730 ? `最近买入${daysSinceLastBuy}天（赎回费${(redeemFeeRate * 100).toFixed(2)}%，接近免费）`
+    : `最近买入${daysSinceLastBuy}天（已免赎回费）`;
+  const costDesc = costNav > 0 ? `成本${costNav.toFixed(4)}，当前净值${nav.toFixed(4)}，${gainPct >= 0 ? '盈利' : '亏损'}${Math.abs(gainPct).toFixed(2)}%` : '';
+
+  reasoning.push(`[持仓] ${positionDesc}，${holdTimeDesc}`);
+  if (costDesc) reasoning.push(`[成本] ${costDesc}，底仓因子${baseFactor}x（${basePositionPct}%底仓→${baseFactor > 1 ? '活仓少需补充' : baseFactor < 1 ? '活仓充足' : '标准'}），卖出谨慎度${sellCaution}x`);
+  reasoning.push(`[环境] 周期：${cycleLabel[cyclePhase]} | 恐惧贪婪：${fearGreed}（${fearGreed < 30 ? '恐惧=买入机会' : fearGreed > 70 ? '贪婪=卖出信号' : '中性观望'}）| 信念：${conviction > 1.3 ? '三维共振→重仓' : conviction < 0.8 ? '信号分歧→轻仓' : '一般'}`);
+
+  if (nav > costNav && costNav > 0) {
+    // -------- 盈利状态 --------
+    const profitPct = gainPct;
+    const bf = baseFactor;
+
+    if (cyclePhase === 'euphoria' && swingShares > 0) {
+      action = 'sell';
+      opShares = r4(swingShares * 0.85 * Math.min(contrarian, 2.0) * sellCaution);
+      confidence = 85; urgency = 'high';
+      reasoning.push(`[Marks] 周期过热（RSI ${technical.rsi14.toFixed(0)}），减仓${Math.round(85 * sellCaution)}%活仓（底仓${basePositionPct}%）`);
+
+    } else if (profitPct >= stopProfit && swingShares > 0) {
+      action = 'sell';
+      const ratio = (profitPct >= stopProfit * 1.5 ? 0.9 : 0.7) * sellCaution;
+      opShares = r4(swingShares * ratio);
+      confidence = 80; urgency = 'high';
+      reasoning.push(`盈利${profitPct.toFixed(1)}%达止盈线${stopProfit}%，止盈${Math.round(ratio * 100)}%活仓`);
+
+    } else if (profitPct >= dynamicTakeProfit && swingShares > 0) {
+      action = 'sell';
+      const overPct = profitPct - dynamicTakeProfit;
+      const ratio = Math.min(0.3 + Math.floor(overPct / 5) * 0.2, 0.8) * sellCaution;
+      opShares = r4(swingShares * ratio);
+      confidence = 70; urgency = 'medium';
+      reasoning.push(`[动态止盈] 盈利${profitPct.toFixed(1)}%达动态线${dynamicTakeProfit.toFixed(1)}%，阶梯卖${Math.round(ratio * 100)}%活仓`);
+
+    } else if (profitPct >= 3 && swingShares > 0 && (compositeScore <= 10 || cyclePhase === 'distribution')) {
+      action = 'sell';
+      const baseRatio = cyclePhase === 'distribution' ? 0.6 : Math.min(0.1 + Math.floor(profitPct / 3) * 0.1, 0.5);
+      const ratio = baseRatio * sellCaution;
+      opShares = r4(swingShares * ratio);
+      confidence = 60; urgency = cyclePhase === 'distribution' ? 'high' : 'low';
+      reasoning.push(`[网格止盈] 浮盈${profitPct.toFixed(1)}%${cyclePhase === 'distribution' ? '+ 派发期' : ''}，卖${Math.round(ratio * 100)}%活仓（底仓${basePositionPct}%）`);
+
+    } else if (compositeScore <= -10 && profitPct >= 1 && swingShares > 0) {
+      action = 'sell'; opShares = r4(swingShares * 0.4 * sellConviction * sellCaution);
+      confidence = 65; urgency = 'medium';
+      reasoning.push(`[Soros] 信号转空（${compositeScore}分），快速锁利`);
+
+    } else if (cyclePhase === 'recovery' || cyclePhase === 'expansion') {
+      if (technical.bollingerBands.percentB < 40 && compositeScore > 0) {
+        action = 'buy';
+        // 底仓高→活仓少→更积极补充活仓
+        opAmount = Math.round(rawBase * 1.0 * buyConviction * bf);
+        opShares = r4(opAmount / nav);
+        confidence = 65; urgency = 'medium';
+        reasoning.push(`[Livermore] 上升趋势回调（%B=${technical.bollingerBands.percentB.toFixed(0)}），加活仓${bf !== 1 ? `(底仓${basePositionPct}%→${bf}x)` : ''}`);
+      } else {
+        action = 'hold'; confidence = 55;
+        reasoning.push(`上升趋势中持有，等回调到布林中下轨再加仓`);
+      }
+    } else {
+      action = 'hold'; confidence = 50;
+      reasoning.push(`浮盈${profitPct.toFixed(1)}%，等待更好的卖点或回调买点`);
+    }
+  } else if (costNav > 0) {
+    // -------- 亏损状态 --------
+    const lossPct = Math.abs(gainPct);
+    const lossUrgency = (lossPct > 10 && (cyclePhase === 'capitulation' || cyclePhase === 'early_recovery') ? 'high' : lossPct > 5 ? 'medium' : 'low') as 'high' | 'medium' | 'low';
+    const lossConfBoost = Math.min(Math.floor(lossPct / 5) * 5, 15);
+    const bf = baseFactor;
+
+    // [索罗斯修正] 真正的卖出止损：超止损线+趋势strong_down+compositeScore极低→卖出活仓止损
+    if (lossPct > stopLoss && compositeScore < -30 && technical.trend === 'strong_down' && swingShares > 0) {
+      action = 'sell';
+      opShares = r4(swingShares * 0.3); // 卖30%活仓止损
+      confidence = 65; urgency = 'high';
+      reasoning.push(`[Soros止损] 亏${lossPct.toFixed(1)}%+趋势崩坏（${compositeScore}分），卖出30%活仓止损`);
+
+    // [巴菲特修正] 底仓熔断：基本面极差+深亏→底仓也要减
+    } else if (lossPct > 30 && fundScore.score < -20 && swingShares <= 0 && baseShares > 0) {
+      action = 'sell';
+      opShares = r4(baseShares * 0.3); // 卖30%底仓
+      confidence = 60; urgency = 'high';
+      reasoning.push(`[底仓熔断] 亏${lossPct.toFixed(1)}%+基本面恶化（${fundScore.score}分），减30%底仓`);
+
+    // [达利欧修正] 总亏损熔断
+    } else if (circuitBreaker) {
+      action = 'hold'; confidence = 70; urgency = 'high';
+      reasoning.push(`[熔断] 总亏损${totalLossPct.toFixed(1)}%超25%，暂停所有买入，等待市场企稳`);
+
+    // [索罗斯修正] Capitulation分步建仓：先30%试探，不一次性重仓
+    } else if (cyclePhase === 'capitulation') {
+      action = 'buy';
+      // 分步：只投入计划量的30%作为试探仓
+      const fullAmount = Math.round(rawBase * cycleMultiplier.capitulation * contrarian * buyConviction * valueMultiplier * bf);
+      opAmount = Math.round(fullAmount * 0.3);
+      opShares = r4(opAmount / nav);
+      confidence = Math.min(70 + lossConfBoost, 85); urgency = 'high';
+      reasoning.push(`[Soros试探] 恐慌探底，先投30%试探（¥${opAmount}/${fullAmount}），确认反转再加仓`);
+    } else if (cyclePhase === 'early_recovery') {
+      action = 'buy';
+      // early_recovery = 确认阶段，投入70%
+      opAmount = Math.round(rawBase * cycleMultiplier.early_recovery * valueMultiplier * buyConviction * bf * 0.7);
+      opShares = r4(opAmount / nav);
+      confidence = Math.min(75 + lossConfBoost, 90); urgency = 'high';
+      reasoning.push(`[Marks确认] 复苏信号确认，加仓70%，乘数${valueMultiplier.toFixed(1)}x`);
+    } else if (compositeScore >= 0) {
+      action = 'buy';
+      opAmount = Math.round(rawBase * valueMultiplier * buyConviction * cycleMultiplier[cyclePhase] * bf);
+      opShares = r4(opAmount / nav);
+      confidence = 60 + lossConfBoost; urgency = lossUrgency;
+      reasoning.push(`[Graham] 价值平均：低于成本${lossPct.toFixed(1)}%，乘数${valueMultiplier.toFixed(1)}x`);
+    } else if (compositeScore >= -20) {
+      action = 'buy';
+      const fundOk = fundScore.score >= 0;
+      const mult = fundOk ? 0.8 : 0.4;
+      opAmount = Math.round(rawBase * mult * valueMultiplier * bf);
+      opShares = r4(opAmount / nav);
+      confidence = 50 + lossConfBoost; urgency = lossUrgency;
+      reasoning.push(`[Lynch] ${fundOk ? '基本面尚可，逢低布局' : '基本面也弱，谨慎小额'}`);
+    } else {
+      // 偏空但未触发止损卖出（compositeScore在-20~-30之间）
+      action = 'buy';
+      opAmount = Math.round(rawBase * 0.3 * Math.max(valueMultiplier, 1) * bf);
+      opShares = r4(opAmount / nav);
+      confidence = 40; urgency = 'low';
+      reasoning.push(`[Graham] 偏空（${compositeScore}分），安全边际${lossPct.toFixed(1)}%，小额逆向买入`);
+    }
+  }
+
+  // [Fix#1] 卖出分支只设了opShares没设opAmount，统一补算
+  if (action === 'sell' && opShares > 0 && opAmount === 0) {
+    opAmount = Math.round(opShares * nav);
+  }
+  // [Fix#6] 空持仓建仓：新基金应该买入建仓而非永远hold
+  if (holdingShares <= 0 && action === 'hold' && costNav === 0) {
+    action = 'buy';
+    opAmount = Math.max(rawBase, 500);
+    opShares = r4(opAmount / nav);
+    confidence = 60; urgency = 'medium';
+    reasoning.push(`[建仓] 无持仓，初始建仓 ¥${opAmount}`);
+  }
+  // [Fix#7] 底仓100%时不买入（买了也永远卖不出，资金陷阱）
+  if (action === 'buy' && basePositionPct >= 100 && holdingShares > 0) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[警告] 底仓100%，买入后无法卖出，请先调低底仓比例`);
+  }
+
+  // [A股修正] 7天赎回惩罚检查：持有<7天时阻止卖出
+  if (action === 'sell' && daysSinceLastBuy < 7) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[赎回保护] 最近买入仅${daysSinceLastBuy}天，持有<7天赎回费1.5%，暂不卖出`);
+  }
+
+  // === 波动率修正 ===
+  if (riskMetrics.volatility20d > 30 && action !== 'hold') {
+    const volReduction = riskMetrics.volatility20d > 40 ? 0.6 : 0.8;
+    opShares = r4(opShares * volReduction);
+    opAmount = Math.round(opShares * nav);
+    reasoning.push(`波动率${riskMetrics.volatility20d.toFixed(0)}%偏高，缩减至${Math.round(volReduction * 100)}%`);
+  }
+
+  // === 金额上限 + 组合风控 + 取整 ===
+  if (opAmount > maxSingleAmount && maxSingleAmount > 0) {
+    opAmount = maxSingleAmount;
+    opShares = r4(opAmount / nav);
+    reasoning.push(`[风控] 单次上限¥${maxSingleAmount}（总成本15%）`);
+  }
+
+  // [假设质疑修正] 组合板块敞口检查
+  let sectorExposure = { totalExposure: 0, overExposed: false, reduction: 1 };
+  if (action === 'buy' && opAmount > 0) {
+    sectorExposure = checkSectorExposure(db, Number(fundId), sectorKeyword, opAmount);
+    if (sectorExposure.overExposed) {
+      opAmount = Math.round(opAmount * sectorExposure.reduction);
+      opShares = r4(opAmount / nav);
+      reasoning.push(`[组合风控] ${sectorKeyword}板块敞口${sectorExposure.totalExposure}%过高，缩减50%`);
+    }
+  }
+
+  opAmount = Math.round(opAmount / 100) * 100 || opAmount;
+  if (opAmount > 0 && nav > 0) opShares = r4(opAmount / nav);
+
+  // === H. 真实成本影响 ===
+  let newShares = holdingShares;
+  let newCost = totalCost;
+  if (action === 'buy') {
+    newShares = r4(holdingShares + opShares);
+    newCost = totalCost + opAmount;
+  } else if (action === 'sell') {
+    newShares = r4(holdingShares - opShares);
+    newCost = totalCost - opShares * costNav;
+  }
+  const newCostNav = newShares > 0 ? r4(newCost / newShares) : 0;
+  const costChange = r4(costNav - newCostNav);
+
+  // === I. 完整循环计划 ===
+  type CycleStep = { action: string; nav: number; shares: number; amount: number };
+  type CyclePlan = {
+    step1: CycleStep;
+    step2: CycleStep;
+    cycleCostDrop: number;
+    cycleProfit: number;
+    newCostNavAfterCycle: number;
+  };
+  let cycle: CyclePlan | null = null;
+
+  if (action === 'sell' && opShares > 0) {
+    const maxDip = Math.min(atrPct * 3, 15);
+    const buyBackNav = r4(Math.max(
+      Math.min(nav * (1 - atrPct * 2.5 / 100), technical.support > 0 ? technical.support : nav * 0.97),
+      nav * (1 - maxDip / 100)
+    ));
+    const buyBackAmount = Math.round(opShares * buyBackNav * 100) / 100;
+    // [巴菲特修正] 扣除交易费用后的真实循环利润
+    const grossProfit = opShares * (nav - buyBackNav);
+    const fees = opAmount * redeemFeeRate + buyBackAmount * FEE_SUBSCRIBE;
+    const netProfit = Math.round((grossProfit - fees) * 100) / 100;
+    const cycleCostDrop = holdingShares > 0 && netProfit > 0 ? r4(netProfit / holdingShares) : 0;
+    const newNavAfterCycle = costNav > 0 ? r4(costNav - cycleCostDrop) : 0;
+    const profitPctAfterFee = opAmount > 0 ? (netProfit / opAmount * 100) : 0;
+
+    cycle = {
+      step1: { action: `卖出活仓`, nav, shares: opShares, amount: opAmount },
+      step2: { action: `买回（目标）`, nav: buyBackNav, shares: opShares, amount: buyBackAmount },
+      cycleCostDrop, cycleProfit: netProfit, newCostNavAfterCycle: newNavAfterCycle,
+    };
+
+    if (profitPctAfterFee < MIN_CYCLE_PROFIT_PCT && netProfit > 0) {
+      reasoning.push(`闭环：卖@${nav.toFixed(4)}→买@${buyBackNav.toFixed(4)}，扣费后利润仅${profitPctAfterFee.toFixed(1)}%<${MIN_CYCLE_PROFIT_PCT}%，循环性价比低`);
+    } else if (netProfit <= 0) {
+      reasoning.push(`闭环：卖@${nav.toFixed(4)}→买@${buyBackNav.toFixed(4)}，扣费后亏损¥${Math.abs(netProfit)}，不建议执行循环`);
+    } else {
+      reasoning.push(`闭环：卖@${nav.toFixed(4)}→买@${buyBackNav.toFixed(4)}，扣费后净利¥${netProfit}，降成本${cycleCostDrop.toFixed(4)}`);
+    }
+  } else if (action === 'buy' && opShares > 0) {
+    const targetUp = Math.max(atrPct * 2.5, 3);
+    const sellTargetNav = r4(nav * (1 + targetUp / 100));
+    const sellAmount = Math.round(opShares * sellTargetNav * 100) / 100;
+    const grossProfit = opShares * (sellTargetNav - nav);
+    const fees = opAmount * FEE_SUBSCRIBE + sellAmount * FEE_REDEEM_CYCLE;
+    const netProfit = Math.round((grossProfit - fees) * 100) / 100;
+    const cycleCostDrop = holdingShares > 0 && netProfit > 0 ? r4(netProfit / holdingShares) : 0;
+    const newNavAfterCycle = costNav > 0 ? r4(costNav - cycleCostDrop) : 0;
+
+    cycle = {
+      step1: { action: `买入活仓`, nav, shares: opShares, amount: opAmount },
+      step2: { action: `卖出（目标）`, nav: sellTargetNav, shares: opShares, amount: sellAmount },
+      cycleCostDrop, cycleProfit: netProfit, newCostNavAfterCycle: newNavAfterCycle,
+    };
+    reasoning.push(`闭环：买@${nav.toFixed(4)}→卖@${sellTargetNav.toFixed(4)}，扣费后净利¥${netProfit}，降成本${cycleCostDrop.toFixed(4)}`);
+  }
+
+  // === J. 各维度要点 ===
+  const techSignals = signals
+    .sort((a, b) => Math.abs(b.strength) - Math.abs(a.strength))
+    .slice(0, 4)
+    .map(s => `[${s.source}] ${s.reason}`);
+
+  if (techScore >= 30) reasoning.push(`技术面偏多（${techScore}分）：${technical.trend === 'strong_up' ? '强势上涨' : technical.trend === 'up' ? '温和上涨' : '震荡'}`);
+  else if (techScore <= -30) reasoning.push(`技术面偏空（${techScore}分）：${technical.trend === 'strong_down' ? '加速下跌' : '偏弱下行'}`);
+  if (fundScore.highlights.length > 0) reasoning.push(`基本面：${fundScore.highlights[0]}`);
+  if (newsScore.bullish.length > 0) reasoning.push(`消息面利多：${newsScore.bullish[0].slice(0, 30)}...`);
+  if (newsScore.bearish.length > 0) reasoning.push(`消息面利空：${newsScore.bearish[0].slice(0, 30)}...`);
+  if (capitalFlow && Math.abs(capitalFlow.flowScore) >= 10) {
+    const cfParts: string[] = [];
+    if (capitalFlow.market.length > 0) {
+      const latest = capitalFlow.market[capitalFlow.market.length - 1];
+      cfParts.push(`主力${latest.mainNetInflow > 0 ? '流入' : '流出'}${Math.abs(latest.mainNetInflow / 1e8).toFixed(0)}亿`);
+    }
+    if (capitalFlow.northbound.length > 0) {
+      const latest = capitalFlow.northbound[capitalFlow.northbound.length - 1];
+      if (Math.abs(latest.netBuy) > 1) cfParts.push(`北向${latest.netBuy > 0 ? '+' : ''}${latest.netBuy.toFixed(1)}亿`);
+    }
+    if (capitalFlow.sector) cfParts.push(`${capitalFlow.sector.name}${capitalFlow.sector.mainNetInflow > 0 ? '+' : ''}${capitalFlow.sector.mainNetInflow.toFixed(1)}亿`);
+    reasoning.push(`[资金] ${capitalFlow.flowLabel}（${cfParts.join('，')}）`);
+  }
+
+  const actionLabel = action === 'buy' ? `买入 ${opShares} 份（¥${opAmount}）` : action === 'sell' ? `卖出 ${opShares} 份（¥${opAmount}）` : '持有观望';
+  const cycleNote = cycle && cycle.cycleProfit > 0 ? `，循环净利¥${cycle.cycleProfit}` : '';
+  const summary = `建议${actionLabel}${cycleNote}`;
+
+  // [达利欧修正] 最坏情况预估
+  const worstCaseLoss = action === 'buy' && opAmount > 0
+    ? Math.round(opAmount * Math.max(riskMetrics.maxDrawdown, 10) / 100)
+    : 0;
+
+  return {
+    nav,
+    action,
+    shares: opShares,
+    amount: opAmount,
+    confidence,
+    urgency,
+    summary,
+    compositeScore,
+    masterSignals: {
+      fearGreed,
+      cyclePhase,
+      cycleLabel: cycleLabel[cyclePhase],
+      conviction: Math.round(conviction * 100) / 100,
+      valueMultiplier: Math.round(valueMultiplier * 100) / 100,
+      contrarian: Math.round(contrarian * 100) / 100,
+      dynamicTakeProfit: Math.round(dynamicTakeProfit * 100) / 100,
+      baseFactor,
+    },
+    position: {
+      holdingShares: r4(holdingShares), costNav: r4(costNav),
+      gainPct: Math.round(gainPct * 100) / 100,
+      baseShares, swingShares,
+      marketValue: Math.round(marketValue * 100) / 100,
+      daysSinceFirstTx, txCount,
+    },
+    impact: { newShares, newCostNav, costChange },
+    cycle,
+    dimensions: {
+      technical: { score: techScore, trend: technical.trend, rsi: technical.rsi14, signals: techSignals },
+      fundamental: { score: fundScore.score, highlights: fundScore.highlights },
+      news: { score: newsScore.score, sentiment: newsScore.score > 20 ? '偏多' : newsScore.score < -20 ? '偏空' : '中性', bullish: newsScore.bullish, bearish: newsScore.bearish },
+    },
+    holdings: holdings ? { quarter: (holdings as any).quarter, top5: (holdings as any).holdings?.slice(0, 5).map((h: any) => `${h.name} ${h.pctOfNav}%`) } : null,
+    sectorExposure: sectorExposure.totalExposure > 0 ? sectorExposure : null,
+    capitalFlow: capitalFlow ? {
+      flowScore: capitalFlow.flowScore,
+      flowLabel: capitalFlow.flowLabel,
+      sector: capitalFlow.sector,
+      latestMarket: capitalFlow.market.length > 0 ? { mainNetInflow: Math.round(capitalFlow.market[capitalFlow.market.length - 1].mainNetInflow / 1e8 * 100) / 100 } : null,
+      latestNorthbound: capitalFlow.northbound.length > 0 ? capitalFlow.northbound[capitalFlow.northbound.length - 1] : null,
+    } : null,
+    reasoning,
+    riskWarnings: {
+      worstCaseLoss,
+      circuitBreaker,
+      totalLossPct: Math.round(totalLossPct * 10) / 10,
+      daysSinceLastBuy,
+      redeemFeeRate: Math.round(redeemFeeRate * 10000) / 100,
+      redeemFeeLevels: redeemFeeLevels.map(l => ({ ...l, feeRate: l.feeRate })),
+    },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// 单基金决策端点
+router.get('/funds/:id/decision', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const realtimeNav = req.query.nav ? parseFloat(req.query.nav as string) : 0;
+    const result = await computeDecision(id, realtimeNav);
+    res.json(result);
+  } catch (err: any) {
+    const status = err.message === '基金不存在' ? 404 : err.message === '需要提供净值' ? 400 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// 批量获取所有基金的完整决策（用于总览面板）
+router.get('/decisions/all', async (req: Request, res: Response) => {
+  try {
+    const funds = db.prepare(`
+      SELECT f.id, f.name, f.code, f.color,
+        COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares
+      FROM funds f
+      LEFT JOIN transactions t ON t.fund_id = f.id
+      WHERE f.deleted_at IS NULL
+      GROUP BY f.id
+    `).all() as any[];
+
+    const estimatesParam = req.query.estimates as string;
+    let estimates: Record<number, number> = {};
+    if (estimatesParam) {
+      try { estimates = JSON.parse(estimatesParam); } catch {}
+    }
+
+    const results: any[] = [];
+
+    // 并行调用完整决策引擎
+    await Promise.all(funds.filter(f => f.holding_shares > 0).map(async (f) => {
+      const nav = estimates[f.id] || 0;
+      try {
+        const decision = await computeDecision(f.id, nav);
+        results.push({
+          fundId: f.id,
+          name: f.name,
+          code: f.code,
+          color: f.color,
+          ...decision,
+        });
+      } catch {
+        results.push({
+          fundId: f.id, name: f.name, code: f.code, color: f.color,
+          nav, action: 'hold', shares: 0, amount: 0, summary: '无法计算',
+          confidence: 0, position: { holdingShares: f.holding_shares, costNav: 0, gainPct: 0 },
+        });
+      }
+    }));
+
+    res.json(results);
+  } catch (err: any) {
+    res.status(500).json({ error: '批量决策失败: ' + err.message });
+  }
+});
+
+// ============================================================
+// 明日行情预测 + 投资策略
+// ============================================================
+router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
+  const fundId = Number(req.params.id);
+  try {
+    const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+    if (!fund) { res.status(404).json({ error: '基金不存在' }); return; }
+
+    const nav = fund.market_nav || 0;
+    if (nav <= 0) { res.status(400).json({ error: '无当前净值' }); return; }
+
+    // === 1. 并行获取数据 ===
+    let navHistory: NavPoint[] = [];
+    let fundamental: any = null;
+    let news: any[] = [];
+    let marketCtx: any = null;
+    const _fcCf: { v: CapitalFlowData | null } = { v: null };
+
+    const sectorKeyword = inferSectorKeyword(fund.name);
+    const promises: Promise<void>[] = [];
+    if (fund.code) {
+      promises.push(fetchNavHistory(fund.code, 60).then(h => { navHistory = h; }));
+      promises.push(fetchFundamental(fund.code).then(f => { fundamental = f; }));
+    }
+    promises.push(fetchSectorNews(sectorKeyword, 10).then(n => { news = n; }));
+    promises.push(fetchMarketContext(fund.name).then(m => { marketCtx = m; }));
+    promises.push(fetchCapitalFlow(fund.name).then(cf => { _fcCf.v = cf; }));
+    await Promise.all(promises);
+    const capitalFlow = _fcCf.v;
+
+    const navValues = navHistory.map(p => p.nav);
+    if (navValues.length < 5) {
+      res.json({ error: null, prediction: null, message: '历史数据不足，无法预测' });
+      return;
+    }
+
+    // === 2. 技术面分析 ===
+    const tech = calcTechnical(navValues);
+    const risk = calcRisk(navValues);
+    const fundScore = fundamental ? scoreFundamental(fundamental) : { score: 0, highlights: [] };
+    const newsScore = scoreNewsSentiment(news);
+
+    // === 3. 多因子预测模型 (v2优化版) ===
+    const current = navValues[navValues.length - 1];
+    const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
+
+    // --- 3a. 趋势动量因子（带衰减权重） ---
+    const changes = navValues.slice(-10).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100);
+    // 近期权重更高：d-1权重1.0, d-2权重0.7, d-3权重0.5, d-4权重0.3, d-5权重0.2
+    const decayWeights = [0.2, 0.3, 0.5, 0.7, 1.0];
+    const recentChanges5 = changes.slice(-5);
+    const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.2), 0) / decayWeights.reduce((a, b) => a + b, 0);
+    const mom3d = changes.slice(-3).reduce((a, b) => a + b, 0);
+    const mom5d = changes.slice(-5).reduce((a, b) => a + b, 0);
+    // 连涨连跌天数（动量持续性）
+    let streak = 0;
+    for (let i = changes.length - 1; i >= 1; i--) {
+      if (changes[i] > 0 && streak >= 0) streak++;
+      else if (changes[i] < 0 && streak <= 0) streak--;
+      else break;
+    }
+    let trendFactor = 0;
+    trendFactor += weightedMom * 0.6;          // 衰减加权动量
+    trendFactor += tech.trendScore * 0.015;    // 趋势评分
+    // 连涨5天以上动量衰减（过热回调概率增大）
+    if (Math.abs(streak) >= 5) trendFactor *= 0.5;
+    else if (Math.abs(streak) >= 3) trendFactor *= 0.8;
+
+    // --- 3b. 均值回归因子（分段非线性） ---
+    const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
+    const deviationFromMA5 = ((current - tech.ma5) / tech.ma5) * 100;
+    let reversionFactor = 0;
+    // MA20：偏离越大回归力越强（平方根非线性）
+    if (Math.abs(deviationFromMA20) > 2) {
+      const sign = deviationFromMA20 > 0 ? -1 : 1;
+      reversionFactor += sign * Math.sqrt(Math.abs(deviationFromMA20) - 2) * 0.12;
+    }
+    if (Math.abs(deviationFromMA5) > 1.5) {
+      const sign = deviationFromMA5 > 0 ? -1 : 1;
+      reversionFactor += sign * (Math.abs(deviationFromMA5) - 1.5) * 0.08;
+    }
+
+    // --- 3c. RSI因子（分段非线性） ---
+    let rsiFactor = 0;
+    if (tech.rsi14 > 80) rsiFactor = -(tech.rsi14 - 80) * 0.08;
+    else if (tech.rsi14 > 65) rsiFactor = -(tech.rsi14 - 65) * 0.025;
+    else if (tech.rsi14 < 20) rsiFactor = (20 - tech.rsi14) * 0.08;
+    else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.025;
+    // RSI背离检测：价格新高但RSI未新高→顶背离
+    if (navValues.length >= 10) {
+      const nav5ago = navValues[navValues.length - 6];
+      const rsi5ago = calcRSI(navValues.slice(0, -5), 14);
+      if (current > nav5ago && tech.rsi14 < rsi5ago) rsiFactor -= 0.15; // 顶背离
+      if (current < nav5ago && tech.rsi14 > rsi5ago) rsiFactor += 0.15; // 底背离
+    }
+
+    // --- 3d. MACD信号因子 ---
+    let macdFactor = 0;
+    const hist = tech.macd.histogram;
+    if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.15;
+    else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.15;
+    // 金叉/死叉
+    if (navValues.length >= 2) {
+      const prevMacd = calcMACD(navValues.slice(0, -1));
+      if (prevMacd.histogram <= 0 && hist > 0) macdFactor += 0.3;
+      if (prevMacd.histogram >= 0 && hist < 0) macdFactor -= 0.3;
+    }
+    // MACD柱状图加速/减速（二阶导数）
+    if (navValues.length >= 3) {
+      const prev2Macd = calcMACD(navValues.slice(0, -2));
+      const prevMacd2 = calcMACD(navValues.slice(0, -1));
+      const accel = hist - prevMacd2.histogram;
+      const prevAccel = prevMacd2.histogram - prev2Macd.histogram;
+      if (accel > 0 && prevAccel > 0) macdFactor += 0.1;  // 红柱加速
+      if (accel < 0 && prevAccel < 0) macdFactor -= 0.1;  // 绿柱加速
+    }
+
+    // --- 3e. 布林带因子 ---
+    let bbFactor = 0;
+    const pctB = tech.bollingerBands.percentB;
+    if (pctB > 95) bbFactor = -0.35;
+    else if (pctB > 80) bbFactor = -(pctB - 80) * 0.015;
+    else if (pctB < 5) bbFactor = 0.35;
+    else if (pctB < 20) bbFactor = (20 - pctB) * 0.015;
+    // 布林带收窄→波动率即将扩大，顺趋势加权
+    if (tech.bollingerBands.width < 3) {
+      bbFactor += trendFactor > 0 ? 0.1 : trendFactor < 0 ? -0.1 : 0;
+    }
+
+    // --- 3f. 消息面因子 ---
+    const newsFactor = newsScore.score * 0.008;
+
+    // --- 3g. 市场环境因子 ---
+    let marketFactor = 0;
+    if (marketCtx) {
+      const shIdx = marketCtx.marketIndices.find((i: any) => i.name === '上证指数');
+      const shChangePct = shIdx?.changePct || 0;
+      marketFactor += shChangePct * 0.08;
+      if (marketCtx.marketScore > 20) marketFactor += 0.08;
+      else if (marketCtx.marketScore < -20) marketFactor -= 0.08;
+    }
+
+    // --- 3h. 周内季节性因子 ---
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const dayOfWeek = tomorrow.getDay(); // 0=Sun, 1=Mon...5=Fri
+    let seasonalFactor = 0;
+    // A股统计规律：周一偏弱，周五偏弱（获利了结），周二三四相对较强
+    if (dayOfWeek === 1) seasonalFactor = -0.03;
+    else if (dayOfWeek === 2 || dayOfWeek === 3) seasonalFactor = 0.02;
+    else if (dayOfWeek === 5) seasonalFactor = -0.02;
+    // 月末/季末效应：机构调仓，最后3个交易日偏弱
+    const todayDate = new Date();
+    const daysInMonth = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0).getDate();
+    if (todayDate.getDate() >= daysInMonth - 2) seasonalFactor -= 0.03;
+    // 月初效应：新资金入场偏强
+    if (todayDate.getDate() <= 3) seasonalFactor += 0.02;
+
+    // --- 3i. 支撑/阻力位接近因子 (v3新增) ---
+    let srFactor = 0;
+    if (tech.support > 0 && tech.resistance > 0) {
+      const distToSupport = ((current - tech.support) / current) * 100;
+      const distToResist = ((tech.resistance - current) / current) * 100;
+      // 接近支撑位→反弹概率增大
+      if (distToSupport < 1.0 && distToSupport >= 0) srFactor += 0.2;
+      else if (distToSupport < 2.0 && distToSupport >= 0) srFactor += 0.1;
+      // 跌破支撑位→加速下行
+      if (distToSupport < 0) srFactor -= 0.15;
+      // 接近阻力位→回调概率增大
+      if (distToResist < 1.0 && distToResist >= 0) srFactor -= 0.15;
+      else if (distToResist < 2.0 && distToResist >= 0) srFactor -= 0.08;
+      // 突破阻力位→加速上行
+      if (distToResist < 0) srFactor += 0.2;
+    }
+
+    // --- 3j. 跨时间框架确认因子 (v3新增) ---
+    let crossTfFactor = 0;
+    // 短期(3日)和中期(10日)趋势方向一致→信号加强
+    const mom10d = navValues.length >= 11 ? navValues.slice(-11).reduce((s, v, i, a) => i === 0 ? 0 : s + ((v - a[i-1]) / a[i-1]) * 100, 0) : 0;
+    if (mom3d > 0 && mom10d > 0 && tech.trendScore > 0) crossTfFactor = 0.12; // 三框架共振看多
+    else if (mom3d < 0 && mom10d < 0 && tech.trendScore < 0) crossTfFactor = -0.12; // 三框架共振看空
+    else if ((mom3d > 0) !== (mom10d > 0)) crossTfFactor = 0; // 短中期分歧→中性
+
+    // --- 3k. 缺口回补因子 (v3新增) ---
+    let gapFactor = 0;
+    if (changes.length >= 2) {
+      const lastChange = changes[changes.length - 1];
+      // 大幅跳空（>1.5%）倾向回补
+      if (Math.abs(lastChange) > 1.5) {
+        gapFactor = -lastChange * 0.15; // 反向回补力
+      }
+    }
+
+    // --- 3l. 资金流向因子 (v3新增) ---
+    let capitalFlowFactor = 0;
+    if (capitalFlow) {
+      capitalFlowFactor = capitalFlow.flowScore * 0.005; // -0.5 ~ +0.5
+      // 板块资金流额外加权（更直接相关）
+      if (capitalFlow.sector) {
+        if (capitalFlow.sector.mainNetInflow > 5) capitalFlowFactor += 0.1;
+        else if (capitalFlow.sector.mainNetInflow < -5) capitalFlowFactor -= 0.1;
+      }
+    }
+
+    // --- 3m. 波动率调整因子 ---
+    // 高波动率环境下均值回归和布林带权重提升，趋势权重降低
+    const volAdj = risk.volatility20d > 25 ? 0.7 : risk.volatility20d > 15 ? 0.85 : 1.0;
+    trendFactor *= volAdj;
+    reversionFactor *= (2 - volAdj); // 高波动时回归力更强
+
+    // === 4. 综合预测（v3加权融合） ===
+    const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + seasonalFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor;
+    const maxMove = atrPct * 1.5;
+    const predictedChangePct = Math.max(-maxMove, Math.min(maxMove, rawPrediction));
+    const predictedNav = Math.round((current * (1 + predictedChangePct / 100)) * 10000) / 10000;
+
+    // 预测区间（基于ATR，非对称——趋势方向更宽）
+    const upBias = predictedChangePct > 0 ? 1.3 : 1.0;
+    const downBias = predictedChangePct < 0 ? 1.3 : 1.0;
+    const navHigh = Math.round((current + tech.atr14 * 1.2 * upBias) * 10000) / 10000;
+    const navLow = Math.round((current - tech.atr14 * 1.2 * downBias) * 10000) / 10000;
+
+    // 方向判定
+    let direction: 'up' | 'down' | 'sideways';
+    if (predictedChangePct > 0.15) direction = 'up';
+    else if (predictedChangePct < -0.15) direction = 'down';
+    else direction = 'sideways';
+
+    // 置信度（v3优化：多因子一致性 + 跨时间框架确认加分 + 资金流向加分）
+    const factors = [trendFactor, reversionFactor, rsiFactor, macdFactor, bbFactor, newsFactor, marketFactor, srFactor, crossTfFactor, gapFactor, capitalFlowFactor];
+    const sameDirection = factors.filter(f => (f > 0) === (predictedChangePct > 0) && Math.abs(f) > 0.02).length;
+    let confidence = 30 + sameDirection * 7 + Math.abs(predictedChangePct) * 5;
+    // 跨时间框架共振加分
+    if (Math.abs(crossTfFactor) > 0.1) confidence += 8;
+    // 支撑阻力位确认加分
+    if ((srFactor > 0) === (predictedChangePct > 0) && Math.abs(srFactor) > 0.05) confidence += 5;
+    // 资金流向确认加分
+    if ((capitalFlowFactor > 0) === (predictedChangePct > 0) && Math.abs(capitalFlowFactor) > 0.05) confidence += 6;
+    confidence = Math.min(90, Math.max(20, confidence));
+
+    // === 5. 持仓数据 ===
+    const posRow = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares,
+        COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+        COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as cost_basis
+      FROM transactions WHERE fund_id = ?
+    `).get(fundId) as any;
+    const holdingShares = posRow.holding_shares;
+    const totalCost = posRow.cost_basis;
+    const costNav = holdingShares > 0 && totalCost > 0 ? totalCost / holdingShares : 0;
+    const basePct = fund.base_position_pct ?? 30;
+    const baseShares = r4(holdingShares * basePct / 100);
+    const swingShares = r4(holdingShares - baseShares);
+    const stopProfit = fund.stop_profit_pct || 20;
+    const stopLoss = fund.stop_loss_pct || 15;
+    const gainPct = costNav > 0 ? ((nav - costNav) / costNav) * 100 : 0;
+
+    // === 6. 基于预测生成投资策略 ===
+    let action: 'buy' | 'sell' | 'hold' = 'hold';
+    let shares = 0;
+    let amount = 0;
+    const strategies: string[] = [];
+
+    if (direction === 'down') {
+      // 预测下跌 → 机会：明天低点买入；今天可少量止盈
+      if (gainPct > 5 && swingShares > 0) {
+        // 有盈利且有活仓，今天可先止盈一部分
+        action = 'sell';
+        shares = Math.round(swingShares * 0.15 * 100) / 100;
+        amount = Math.round(shares * nav * 100) / 100;
+        strategies.push(`预测明日下跌${Math.abs(predictedChangePct).toFixed(2)}%，建议今日先止盈${shares}份（¥${amount}）`);
+        strategies.push(`明日若跌至${navLow}附近可接回，完成高抛低吸降低成本`);
+      } else if (gainPct < -5) {
+        // 已亏损，预测继续跌 → 等待更好买点
+        action = 'hold';
+        strategies.push(`预测明日下跌${Math.abs(predictedChangePct).toFixed(2)}%，当前已亏${Math.abs(gainPct).toFixed(1)}%`);
+        strategies.push(`建议等待明日低点¥${navLow}附近再补仓，不急于今天操作`);
+        const suggestAmt = Math.round(500 * Math.min(2, 1 + Math.abs(gainPct) / 20));
+        strategies.push(`明日建议补仓金额：¥${suggestAmt}（约${Math.round(suggestAmt / navLow)}份）`);
+      } else {
+        action = 'hold';
+        strategies.push(`预测明日小幅下跌${Math.abs(predictedChangePct).toFixed(2)}%，持有观望`);
+        strategies.push(`若明日跌至¥${navLow}以下可考虑小额补仓`);
+      }
+    } else if (direction === 'up') {
+      // 预测上涨
+      if (gainPct >= stopProfit && swingShares > 0) {
+        // 已达止盈线 + 预测还涨 → 分批止盈
+        action = 'sell';
+        shares = Math.round(swingShares * 0.2 * 100) / 100;
+        amount = Math.round(shares * nav * 100) / 100;
+        strategies.push(`盈利${gainPct.toFixed(1)}%已达止盈线，虽预测明日涨${predictedChangePct.toFixed(2)}%`);
+        strategies.push(`但盈利落袋优先，建议今日减仓${shares}份（¥${amount}），剩余观察`);
+      } else if (gainPct < -3) {
+        // 亏损中 + 预测涨 → 今天趁低位加仓
+        action = 'buy';
+        const factor = Math.min(2, 1 + Math.abs(gainPct) / 15);
+        amount = Math.round(500 * factor);
+        shares = Math.round(amount / nav * 100) / 100;
+        strategies.push(`预测明日上涨${predictedChangePct.toFixed(2)}%，当前亏损${Math.abs(gainPct).toFixed(1)}%`);
+        strategies.push(`建议今日买入${shares}份（¥${amount}），趁上涨前补仓降低成本`);
+      } else {
+        action = 'hold';
+        strategies.push(`预测明日上涨${predictedChangePct.toFixed(2)}%，当前收益${gainPct >= 0 ? '+' : ''}${gainPct.toFixed(1)}%`);
+        strategies.push(`持有等待，若明日涨至¥${navHigh}以上可适当减仓`);
+      }
+    } else {
+      // 震荡
+      strategies.push(`预测明日横盘震荡（变动${predictedChangePct >= 0 ? '+' : ''}${predictedChangePct.toFixed(2)}%）`);
+      if (gainPct < -5) {
+        action = 'buy';
+        amount = 300;
+        shares = Math.round(amount / nav * 100) / 100;
+        strategies.push(`当前亏损${Math.abs(gainPct).toFixed(1)}%，震荡期可小额定投摊薄成本`);
+        strategies.push(`建议买入${shares}份（¥${amount}）`);
+      } else {
+        strategies.push(`无明确方向信号，建议持有观望`);
+      }
+    }
+
+    // === 7. 预测理由 ===
+    const reasoning: string[] = [];
+    reasoning.push(`[动量] 近3日涨跌${mom3d >= 0 ? '+' : ''}${mom3d.toFixed(2)}%，近5日${mom5d >= 0 ? '+' : ''}${mom5d.toFixed(2)}% → ${trendFactor > 0 ? '看多' : trendFactor < 0 ? '看空' : '中性'}（${trendFactor >= 0 ? '+' : ''}${trendFactor.toFixed(3)}）`);
+    reasoning.push(`[均值回归] 偏离MA20 ${deviationFromMA20 >= 0 ? '+' : ''}${deviationFromMA20.toFixed(2)}%，偏离MA5 ${deviationFromMA5 >= 0 ? '+' : ''}${deviationFromMA5.toFixed(2)}% → ${reversionFactor > 0 ? '反弹' : reversionFactor < 0 ? '回调' : '中性'}（${reversionFactor >= 0 ? '+' : ''}${reversionFactor.toFixed(3)}）`);
+    reasoning.push(`[RSI] ${tech.rsi14.toFixed(0)}${tech.rsi14 > 70 ? '（超买）' : tech.rsi14 < 30 ? '（超卖）' : ''} → ${rsiFactor >= 0 ? '+' : ''}${rsiFactor.toFixed(3)}`);
+    reasoning.push(`[MACD] DIF=${tech.macd.dif.toFixed(4)} DEA=${tech.macd.dea.toFixed(4)} 柱=${tech.macd.histogram > 0 ? '红' : '绿'} → ${macdFactor >= 0 ? '+' : ''}${macdFactor.toFixed(3)}`);
+    reasoning.push(`[布林] 位置${tech.bollingerBands.percentB.toFixed(0)}%（0=下轨 100=上轨） → ${bbFactor >= 0 ? '+' : ''}${bbFactor.toFixed(3)}`);
+    if (newsScore.bullish.length > 0 || newsScore.bearish.length > 0) {
+      reasoning.push(`[消息] ${newsScore.score > 0 ? '偏多' : newsScore.score < 0 ? '偏空' : '中性'}（${newsScore.bullish.length}多/${newsScore.bearish.length}空） → ${newsFactor >= 0 ? '+' : ''}${newsFactor.toFixed(3)}`);
+    }
+    if (marketCtx) {
+      const shIdx = marketCtx.marketIndices.find((i: any) => i.name === '上证指数');
+      const shPct = shIdx?.changePct ?? 0;
+      reasoning.push(`[大盘] 上证 ${shPct >= 0 ? '+' : ''}${shPct.toFixed(2)}%，市场评分${marketCtx.marketScore}（${marketCtx.marketRegime === 'bull' ? '偏多' : marketCtx.marketRegime === 'bear' ? '偏空' : '震荡'}） → ${marketFactor >= 0 ? '+' : ''}${marketFactor.toFixed(3)}`);
+    }
+    if (Math.abs(srFactor) > 0.01) {
+      reasoning.push(`[支撑阻力] ${srFactor > 0 ? '接近支撑位/突破阻力' : '接近阻力位/跌破支撑'} → ${srFactor >= 0 ? '+' : ''}${srFactor.toFixed(3)}`);
+    }
+    if (Math.abs(crossTfFactor) > 0.01) {
+      reasoning.push(`[跨周期] 短中长期${crossTfFactor > 0 ? '共振看多' : '共振看空'} → ${crossTfFactor >= 0 ? '+' : ''}${crossTfFactor.toFixed(3)}`);
+    }
+    if (Math.abs(gapFactor) > 0.01) {
+      reasoning.push(`[缺口] 前日跳空${gapFactor > 0 ? '向下' : '向上'}，回补压力 → ${gapFactor >= 0 ? '+' : ''}${gapFactor.toFixed(3)}`);
+    }
+    if (capitalFlow && Math.abs(capitalFlowFactor) > 0.01) {
+      const cfParts: string[] = [];
+      if (capitalFlow.market.length > 0) {
+        const latest = capitalFlow.market[capitalFlow.market.length - 1];
+        cfParts.push(`大盘主力${latest.mainNetInflow > 0 ? '流入' : '流出'}${Math.abs(latest.mainNetInflow / 1e8).toFixed(0)}亿`);
+      }
+      if (capitalFlow.northbound.length > 0) {
+        const latest = capitalFlow.northbound[capitalFlow.northbound.length - 1];
+        cfParts.push(`北向${latest.netBuy > 0 ? '买入' : '卖出'}${Math.abs(latest.netBuy).toFixed(1)}亿`);
+      }
+      if (capitalFlow.sector) {
+        cfParts.push(`${capitalFlow.sector.name}板块${capitalFlow.sector.mainNetInflow > 0 ? '流入' : '流出'}${Math.abs(capitalFlow.sector.mainNetInflow).toFixed(1)}亿`);
+      }
+      reasoning.push(`[资金] ${capitalFlow.flowLabel}（${cfParts.join('，')}） → ${capitalFlowFactor >= 0 ? '+' : ''}${capitalFlowFactor.toFixed(3)}`);
+    }
+
+    // === 8. 历史胜率统计 ===
+    const recentChanges = navHistory.slice(-20).map((p, i, a) => i === 0 ? 0 : ((p.nav - a[i-1].nav) / a[i-1].nav) * 100).slice(1);
+    const upDays = recentChanges.filter(c => c > 0).length;
+    const downDays = recentChanges.filter(c => c < 0).length;
+    const avgUp = recentChanges.filter(c => c > 0).length > 0 ? recentChanges.filter(c => c > 0).reduce((a, b) => a + b, 0) / upDays : 0;
+    const avgDown = recentChanges.filter(c => c < 0).length > 0 ? recentChanges.filter(c => c < 0).reduce((a, b) => a + b, 0) / downDays : 0;
+
+    res.json({
+      fundName: fund.name,
+      currentNav: nav,
+      prediction: {
+        direction,
+        predictedNav,
+        predictedChangePct: Math.round(predictedChangePct * 100) / 100,
+        navRange: { high: navHigh, low: navLow },
+        confidence: Math.round(confidence),
+      },
+      strategy: {
+        action,
+        shares,
+        amount,
+        strategies,
+      },
+      factors: {
+        trend: { value: Math.round(trendFactor * 1000) / 1000, label: '趋势动量', mom3d: Math.round(mom3d * 100) / 100, mom5d: Math.round(mom5d * 100) / 100 },
+        reversion: { value: Math.round(reversionFactor * 1000) / 1000, label: '均值回归', deviationMA20: Math.round(deviationFromMA20 * 100) / 100 },
+        rsi: { value: Math.round(rsiFactor * 1000) / 1000, label: 'RSI', rsi14: tech.rsi14 },
+        macd: { value: Math.round(macdFactor * 1000) / 1000, label: 'MACD', histogram: tech.macd.histogram > 0 ? 'red' : 'green' },
+        bollinger: { value: Math.round(bbFactor * 1000) / 1000, label: '布林带', percentB: Math.round(tech.bollingerBands.percentB) },
+        news: { value: Math.round(newsFactor * 1000) / 1000, label: '消息面', score: newsScore.score },
+        market: { value: Math.round(marketFactor * 1000) / 1000, label: '大盘环境' },
+        supportResistance: { value: Math.round(srFactor * 1000) / 1000, label: '支撑阻力' },
+        crossTimeframe: { value: Math.round(crossTfFactor * 1000) / 1000, label: '跨周期确认' },
+        gap: { value: Math.round(gapFactor * 1000) / 1000, label: '缺口回补' },
+        capitalFlow: { value: Math.round(capitalFlowFactor * 1000) / 1000, label: '资金流向', score: capitalFlow?.flowScore ?? 0, sectorFlow: capitalFlow?.sector?.mainNetInflow ?? 0 },
+      },
+      position: {
+        holdingShares, costNav: r4(costNav), gainPct: Math.round(gainPct * 100) / 100,
+        baseShares, swingShares,
+      },
+      stats: {
+        recent20: { upDays, downDays, avgUp: Math.round(avgUp * 100) / 100, avgDown: Math.round(avgDown * 100) / 100 },
+        volatility: risk.volatility20d,
+        atrPct: Math.round(atrPct * 100) / 100,
+      },
+      reasoning,
+      fundamentalHighlights: fundScore.highlights,
+      capitalFlow: capitalFlow ? {
+        flowScore: capitalFlow.flowScore,
+        flowLabel: capitalFlow.flowLabel,
+        sector: capitalFlow.sector,
+        latestMarket: capitalFlow.market.length > 0 ? {
+          date: capitalFlow.market[capitalFlow.market.length - 1].date,
+          mainNetInflow: Math.round(capitalFlow.market[capitalFlow.market.length - 1].mainNetInflow / 1e8 * 100) / 100,
+        } : null,
+        latestNorthbound: capitalFlow.northbound.length > 0 ? capitalFlow.northbound[capitalFlow.northbound.length - 1] : null,
+      } : null,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '预测失败: ' + err.message });
+  }
+});
+
+// ============================================================
+// 批量预测（总览面板用）
+// ============================================================
+router.get('/forecasts/all', async (_req: Request, res: Response) => {
+  try {
+    const funds = db.prepare(`
+      SELECT f.id, f.name, f.code, f.color, f.market_nav,
+        COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares
+      FROM funds f
+      LEFT JOIN transactions t ON t.fund_id = f.id
+      WHERE f.deleted_at IS NULL
+      GROUP BY f.id
+    `).all() as any[];
+
+    const results: Record<number, any> = {};
+
+    await Promise.all(funds.filter(f => f.holding_shares > 0 && f.code).map(async (f) => {
+      try {
+        const nav = f.market_nav || 0;
+        if (nav <= 0) return;
+
+        let navHistory: NavPoint[] = [];
+        let newsItems: any[] = [];
+        let marketCtx: any = null;
+        const _bfCf: { v: CapitalFlowData | null } = { v: null };
+
+        const sectorKeyword = inferSectorKeyword(f.name);
+        await Promise.all([
+          fetchNavHistory(f.code, 60).then(h => { navHistory = h; }),
+          fetchSectorNews(sectorKeyword, 5).then(n => { newsItems = n; }),
+          fetchMarketContext(f.name).then(m => { marketCtx = m; }),
+          fetchCapitalFlow(f.name).then(cf => { _bfCf.v = cf; }),
+        ]);
+        const cfData = _bfCf.v;
+
+        const navValues = navHistory.map(p => p.nav);
+        if (navValues.length < 5) return;
+
+        const tech = calcTechnical(navValues);
+        const risk = calcRisk(navValues);
+        const newsScore = scoreNewsSentiment(newsItems);
+        const current = navValues[navValues.length - 1];
+        const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
+
+        // 简化版多因子预测（与完整版相同算法）
+        const changes = navValues.slice(-10).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100);
+        const decayWeights = [0.2, 0.3, 0.5, 0.7, 1.0];
+        const recentChanges5 = changes.slice(-5);
+        const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.2), 0) / decayWeights.reduce((a, b) => a + b, 0);
+        const mom3d = changes.slice(-3).reduce((a, b) => a + b, 0);
+        let streak = 0;
+        for (let i = changes.length - 1; i >= 1; i--) {
+          if (changes[i] > 0 && streak >= 0) streak++;
+          else if (changes[i] < 0 && streak <= 0) streak--;
+          else break;
+        }
+        let trendFactor = weightedMom * 0.6 + tech.trendScore * 0.015;
+        if (Math.abs(streak) >= 5) trendFactor *= 0.5;
+        else if (Math.abs(streak) >= 3) trendFactor *= 0.8;
+
+        const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
+        const deviationFromMA5 = ((current - tech.ma5) / tech.ma5) * 100;
+        let reversionFactor = 0;
+        if (Math.abs(deviationFromMA20) > 2) reversionFactor += (deviationFromMA20 > 0 ? -1 : 1) * Math.sqrt(Math.abs(deviationFromMA20) - 2) * 0.12;
+        if (Math.abs(deviationFromMA5) > 1.5) reversionFactor += (deviationFromMA5 > 0 ? -1 : 1) * (Math.abs(deviationFromMA5) - 1.5) * 0.08;
+
+        let rsiFactor = 0;
+        if (tech.rsi14 > 80) rsiFactor = -(tech.rsi14 - 80) * 0.08;
+        else if (tech.rsi14 > 65) rsiFactor = -(tech.rsi14 - 65) * 0.025;
+        else if (tech.rsi14 < 20) rsiFactor = (20 - tech.rsi14) * 0.08;
+        else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.025;
+
+        let macdFactor = 0;
+        const hist = tech.macd.histogram;
+        if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.15;
+        else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.15;
+
+        let bbFactor = 0;
+        const pctB = tech.bollingerBands.percentB;
+        if (pctB > 95) bbFactor = -0.35;
+        else if (pctB > 80) bbFactor = -(pctB - 80) * 0.015;
+        else if (pctB < 5) bbFactor = 0.35;
+        else if (pctB < 20) bbFactor = (20 - pctB) * 0.015;
+
+        const newsFactor = newsScore.score * 0.008;
+        let marketFactor = 0;
+        if (marketCtx) {
+          const shIdx = marketCtx.marketIndices.find((i: any) => i.name === '上证指数');
+          marketFactor += (shIdx?.changePct || 0) * 0.08;
+          if (marketCtx.marketScore > 20) marketFactor += 0.08;
+          else if (marketCtx.marketScore < -20) marketFactor -= 0.08;
+        }
+
+        // v3 新增因子
+        let srFactor = 0;
+        if (tech.support > 0 && tech.resistance > 0) {
+          const distToSupport = ((current - tech.support) / current) * 100;
+          const distToResist = ((tech.resistance - current) / current) * 100;
+          if (distToSupport < 1.0 && distToSupport >= 0) srFactor += 0.2;
+          else if (distToSupport < 2.0 && distToSupport >= 0) srFactor += 0.1;
+          if (distToSupport < 0) srFactor -= 0.15;
+          if (distToResist < 1.0 && distToResist >= 0) srFactor -= 0.15;
+          else if (distToResist < 2.0 && distToResist >= 0) srFactor -= 0.08;
+          if (distToResist < 0) srFactor += 0.2;
+        }
+
+        const mom10d = navValues.length >= 11 ? navValues.slice(-11).reduce((s, v, i, a) => i === 0 ? 0 : s + ((v - a[i-1]) / a[i-1]) * 100, 0) : 0;
+        let crossTfFactor = 0;
+        if (mom3d > 0 && mom10d > 0 && tech.trendScore > 0) crossTfFactor = 0.12;
+        else if (mom3d < 0 && mom10d < 0 && tech.trendScore < 0) crossTfFactor = -0.12;
+
+        let gapFactor = 0;
+        if (changes.length >= 2 && Math.abs(changes[changes.length - 1]) > 1.5) {
+          gapFactor = -changes[changes.length - 1] * 0.15;
+        }
+
+        // 资金流向因子
+        let capitalFlowFactor = 0;
+        if (cfData) {
+          capitalFlowFactor = cfData.flowScore * 0.005;
+          if (cfData.sector) {
+            if (cfData.sector.mainNetInflow > 5) capitalFlowFactor += 0.1;
+            else if (cfData.sector.mainNetInflow < -5) capitalFlowFactor -= 0.1;
+          }
+        }
+
+        const volAdj = risk.volatility20d > 25 ? 0.7 : risk.volatility20d > 15 ? 0.85 : 1.0;
+        trendFactor *= volAdj;
+        reversionFactor *= (2 - volAdj);
+
+        const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor;
+        const maxMove = atrPct * 1.5;
+        const predictedChangePct = Math.max(-maxMove, Math.min(maxMove, rawPrediction));
+        const predictedNav = Math.round((current * (1 + predictedChangePct / 100)) * 10000) / 10000;
+
+        let direction: 'up' | 'down' | 'sideways';
+        if (predictedChangePct > 0.15) direction = 'up';
+        else if (predictedChangePct < -0.15) direction = 'down';
+        else direction = 'sideways';
+
+        const allFactors = [trendFactor, reversionFactor, rsiFactor, macdFactor, bbFactor, newsFactor, marketFactor, srFactor, crossTfFactor, gapFactor, capitalFlowFactor];
+        const sameDirection = allFactors.filter(ft => (ft > 0) === (predictedChangePct > 0) && Math.abs(ft) > 0.02).length;
+        let confidence = 30 + sameDirection * 7 + Math.abs(predictedChangePct) * 5;
+        if (Math.abs(crossTfFactor) > 0.1) confidence += 8;
+        if ((srFactor > 0) === (predictedChangePct > 0) && Math.abs(srFactor) > 0.05) confidence += 5;
+        if ((capitalFlowFactor > 0) === (predictedChangePct > 0) && Math.abs(capitalFlowFactor) > 0.05) confidence += 6;
+        confidence = Math.min(90, Math.max(20, confidence));
+
+        const forecastData = {
+          direction,
+          predictedNav,
+          predictedChangePct: Math.round(predictedChangePct * 100) / 100,
+          confidence: Math.round(confidence),
+          navRange: {
+            high: Math.round((current + tech.atr14 * 1.2 * (predictedChangePct > 0 ? 1.3 : 1.0)) * 10000) / 10000,
+            low: Math.round((current - tech.atr14 * 1.2 * (predictedChangePct < 0 ? 1.3 : 1.0)) * 10000) / 10000,
+          },
+          rsi: Math.round(tech.rsi14),
+          trend: tech.trend,
+          volatility: Math.round(risk.volatility20d * 10) / 10,
+          flowScore: cfData?.flowScore ?? 0,
+          flowLabel: cfData?.flowLabel ?? '',
+        };
+        results[f.id] = forecastData;
+
+        // 持久化预测到数据库（target_date = 下一交易日）
+        const targetDate = getNextTradingDay();
+        const factorsJson = JSON.stringify({
+          trend: Math.round(trendFactor * 1000) / 1000,
+          reversion: Math.round(reversionFactor * 1000) / 1000,
+          rsi: Math.round(rsiFactor * 1000) / 1000,
+          macd: Math.round(macdFactor * 1000) / 1000,
+          bollinger: Math.round(bbFactor * 1000) / 1000,
+          news: Math.round(newsFactor * 1000) / 1000,
+          market: Math.round(marketFactor * 1000) / 1000,
+          supportResistance: Math.round(srFactor * 1000) / 1000,
+          crossTimeframe: Math.round(crossTfFactor * 1000) / 1000,
+          gap: Math.round(gapFactor * 1000) / 1000,
+          capitalFlow: Math.round(capitalFlowFactor * 1000) / 1000,
+        });
+        try {
+          db.prepare(`
+            INSERT INTO forecasts (fund_id, target_date, direction, predicted_nav, predicted_change_pct, confidence, nav_range_high, nav_range_low, factors, base_nav, rsi, trend, volatility)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fund_id, target_date) DO UPDATE SET
+              direction=excluded.direction, predicted_nav=excluded.predicted_nav,
+              predicted_change_pct=excluded.predicted_change_pct, confidence=excluded.confidence,
+              nav_range_high=excluded.nav_range_high, nav_range_low=excluded.nav_range_low,
+              factors=excluded.factors, base_nav=excluded.base_nav, rsi=excluded.rsi,
+              trend=excluded.trend, volatility=excluded.volatility, created_at=datetime('now')
+          `).run(f.id, targetDate, direction, predictedNav, forecastData.predictedChangePct,
+            forecastData.confidence, forecastData.navRange.high, forecastData.navRange.low,
+            factorsJson, current, forecastData.rsi, tech.trend, forecastData.volatility);
+        } catch { /* ignore save errors */ }
+      } catch { /* skip failed fund */ }
+    }));
+
+    res.json(results);
+  } catch (err: any) {
+    res.status(500).json({ error: '批量预测失败: ' + err.message });
+  }
+});
+
+// ============================================================
+// 预测辅助函数
+// ============================================================
+
+function getNextTradingDay(): string {
+  const now = new Date();
+  const d = new Date(now);
+  // 15:00前预测的是今天，15:00后预测明天
+  if (d.getHours() >= 15) d.setDate(d.getDate() + 1);
+  // 跳过周末
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function getTodayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// ============================================================
+// 自动复盘：对比预测与实际
+// ============================================================
+
+const factorLabels: Record<string, string> = {
+  trend: '趋势动量', reversion: '均值回归', rsi: 'RSI', macd: 'MACD',
+  bollinger: '布林带', news: '消息面', market: '大盘环境',
+  supportResistance: '支撑阻力', crossTimeframe: '跨周期确认', gap: '缺口回补',
+  capitalFlow: '资金流向',
+};
+
+function generateReviewAnalysis(
+  forecast: any,
+  actualNav: number,
+  actualChangePct: number,
+): string {
+  const lines: string[] = [];
+  const dirCorrect = (forecast.direction === 'up' && actualChangePct > 0.15)
+    || (forecast.direction === 'down' && actualChangePct < -0.15)
+    || (forecast.direction === 'sideways' && Math.abs(actualChangePct) <= 0.15);
+  const errorPct = Math.abs(forecast.predicted_change_pct - actualChangePct);
+  const withinRange = actualNav >= forecast.nav_range_low && actualNav <= forecast.nav_range_high;
+
+  // 总体评价
+  if (dirCorrect && errorPct < 0.3) {
+    lines.push(`预测准确：方向正确，误差仅${errorPct.toFixed(2)}%`);
+  } else if (dirCorrect) {
+    lines.push(`方向正确但幅度偏差${errorPct.toFixed(2)}%：预测${forecast.predicted_change_pct > 0 ? '+' : ''}${forecast.predicted_change_pct.toFixed(2)}%，实际${actualChangePct >= 0 ? '+' : ''}${actualChangePct.toFixed(2)}%`);
+  } else {
+    lines.push(`方向错误：预测${forecast.direction === 'up' ? '上涨' : forecast.direction === 'down' ? '下跌' : '横盘'}${forecast.predicted_change_pct >= 0 ? '+' : ''}${forecast.predicted_change_pct.toFixed(2)}%，实际${actualChangePct >= 0 ? '+' : ''}${actualChangePct.toFixed(2)}%`);
+  }
+
+  if (!withinRange) {
+    lines.push(`实际净值${actualNav.toFixed(4)}超出预测区间[${forecast.nav_range_low.toFixed(4)}, ${forecast.nav_range_high.toFixed(4)}]`);
+  }
+
+  // 因子归因分析
+  let factors: Record<string, number> = {};
+  try { factors = JSON.parse(forecast.factors || '{}'); } catch {}
+  const actualDirection = actualChangePct > 0 ? 1 : actualChangePct < 0 ? -1 : 0;
+
+  const correct: string[] = [];
+  const wrong: string[] = [];
+  for (const [key, value] of Object.entries(factors)) {
+    if (Math.abs(value) < 0.01) continue;
+    const label = factorLabels[key] || key;
+    const factorDir = value > 0 ? 1 : -1;
+    if (factorDir === actualDirection || actualDirection === 0) {
+      correct.push(`${label}(${value > 0 ? '+' : ''}${value.toFixed(3)})`);
+    } else {
+      wrong.push(`${label}(${value > 0 ? '+' : ''}${value.toFixed(3)})`);
+    }
+  }
+
+  if (correct.length > 0) lines.push(`正确因子：${correct.join('、')}`);
+  if (wrong.length > 0) lines.push(`误判因子：${wrong.join('、')}`);
+
+  // 主要误差来源
+  if (!dirCorrect && wrong.length > 0) {
+    const sorted = Object.entries(factors)
+      .filter(([, v]) => Math.abs(v) > 0.01)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+    const biggestWrong = sorted.find(([, v]) => (v > 0 ? 1 : -1) !== actualDirection);
+    if (biggestWrong) {
+      const label = factorLabels[biggestWrong[0]] || biggestWrong[0];
+      lines.push(`主要误差来源：${label}因子（权重${biggestWrong[1] > 0 ? '+' : ''}${biggestWrong[1].toFixed(3)}）方向相反`);
+    }
+  }
+
+  // 置信度反思
+  if (!dirCorrect && forecast.confidence >= 70) {
+    lines.push(`高置信度(${forecast.confidence}%)预测失败，需警惕过度自信`);
+  } else if (dirCorrect && forecast.confidence < 40) {
+    lines.push(`低置信度(${forecast.confidence}%)但方向正确，模型可能低估了信号强度`);
+  }
+
+  return lines.join('\n');
+}
+
+/** 执行自动复盘：查找所有未复盘的历史预测，用实际净值对比 */
+export function autoReviewForecasts() {
+  const today = getTodayStr();
+  // 找到所有 target_date <= today 且尚未复盘的预测
+  const unreviewed = db.prepare(`
+    SELECT f.*, funds.code, funds.market_nav, funds.name as fund_name
+    FROM forecasts f
+    JOIN funds ON funds.id = f.fund_id
+    WHERE f.target_date <= ?
+      AND NOT EXISTS (SELECT 1 FROM forecast_reviews r WHERE r.forecast_id = f.id)
+      AND funds.code != '' AND funds.code IS NOT NULL
+    ORDER BY f.target_date
+  `).all(today) as any[];
+
+  let reviewed = 0;
+  for (const fc of unreviewed) {
+    // 需要获取 target_date 当天的实际净值
+    // 先查 daily_snapshots，再 fallback 用 market_nav（如果target_date是今天）
+    let actualNav = 0;
+    const snapshot = db.prepare(
+      'SELECT market_nav FROM daily_snapshots WHERE fund_id = ? AND date = ?'
+    ).get(fc.fund_id, fc.target_date) as any;
+    if (snapshot && snapshot.market_nav > 0) {
+      actualNav = snapshot.market_nav;
+    } else if (fc.target_date === today && fc.market_nav > 0) {
+      actualNav = fc.market_nav;
+    }
+    if (actualNav <= 0) continue; // 实际净值尚不可用，跳过
+
+    const baseNav = fc.base_nav > 0 ? fc.base_nav : actualNav;
+    const actualChangePct = baseNav > 0 ? ((actualNav - baseNav) / baseNav) * 100 : 0;
+    const dirCorrect = (fc.direction === 'up' && actualChangePct > 0.15)
+      || (fc.direction === 'down' && actualChangePct < -0.15)
+      || (fc.direction === 'sideways' && Math.abs(actualChangePct) <= 0.15);
+    const errorPct = Math.abs(fc.predicted_change_pct - actualChangePct);
+    const withinRange = actualNav >= (fc.nav_range_low || 0) && actualNav <= (fc.nav_range_high || Infinity);
+
+    const analysis = generateReviewAnalysis(fc, actualNav, actualChangePct);
+
+    try {
+      db.prepare(`
+        INSERT INTO forecast_reviews (forecast_id, fund_id, target_date, actual_nav, actual_change_pct, direction_correct, error_pct, within_range, analysis)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fund_id, target_date) DO UPDATE SET
+          actual_nav=excluded.actual_nav, actual_change_pct=excluded.actual_change_pct,
+          direction_correct=excluded.direction_correct, error_pct=excluded.error_pct,
+          within_range=excluded.within_range, analysis=excluded.analysis, created_at=datetime('now')
+      `).run(fc.id, fc.fund_id, fc.target_date, r4(actualNav), Math.round(actualChangePct * 100) / 100,
+        dirCorrect ? 1 : 0, Math.round(errorPct * 100) / 100, withinRange ? 1 : 0, analysis);
+      reviewed++;
+    } catch { /* ignore */ }
+  }
+  return reviewed;
+}
+
+// ============================================================
+// 复盘端点
+// ============================================================
+
+// 获取复盘摘要（最近N天的统计 + 最近复盘记录）
+router.get('/forecast-reviews/summary', async (req: Request, res: Response) => {
+  try {
+    const days = Number(req.query.days) || 30;
+    const sinceDate = new Date();
+    sinceDate.setDate(sinceDate.getDate() - days);
+    const since = sinceDate.toISOString().slice(0, 10);
+
+    // 总体统计
+    const stats = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(direction_correct) as correct,
+        AVG(error_pct) as avg_error,
+        SUM(within_range) as in_range
+      FROM forecast_reviews WHERE target_date >= ?
+    `).get(since) as any;
+
+    // 按基金统计准确率
+    const byFund = db.prepare(`
+      SELECT r.fund_id, f.name, f.code, f.color,
+        COUNT(*) as total,
+        SUM(r.direction_correct) as correct,
+        AVG(r.error_pct) as avg_error,
+        SUM(r.within_range) as in_range
+      FROM forecast_reviews r
+      JOIN funds f ON f.id = r.fund_id
+      WHERE r.target_date >= ?
+      GROUP BY r.fund_id
+      ORDER BY CAST(r.correct AS REAL) / MAX(r.total, 1) DESC
+    `).all(since) as any[];
+
+    // 最近10条复盘
+    const recent = db.prepare(`
+      SELECT r.*, f.name as fund_name, f.code as fund_code, f.color as fund_color,
+        fc.direction, fc.predicted_nav, fc.predicted_change_pct, fc.confidence, fc.factors
+      FROM forecast_reviews r
+      JOIN funds f ON f.id = r.fund_id
+      JOIN forecasts fc ON fc.id = r.forecast_id
+      ORDER BY r.target_date DESC, r.fund_id
+      LIMIT 20
+    `).all() as any[];
+
+    // 因子准确率统计
+    const allReviews = db.prepare(`
+      SELECT r.actual_change_pct, fc.factors
+      FROM forecast_reviews r
+      JOIN forecasts fc ON fc.id = r.forecast_id
+      WHERE r.target_date >= ? AND fc.factors IS NOT NULL
+    `).all(since) as any[];
+
+    const factorStats: Record<string, { correct: number; wrong: number; total: number }> = {};
+    for (const rv of allReviews) {
+      let factors: Record<string, number> = {};
+      try { factors = JSON.parse(rv.factors || '{}'); } catch { continue; }
+      const actualDir = rv.actual_change_pct > 0 ? 1 : rv.actual_change_pct < 0 ? -1 : 0;
+      for (const [key, value] of Object.entries(factors)) {
+        if (Math.abs(value) < 0.01) continue;
+        if (!factorStats[key]) factorStats[key] = { correct: 0, wrong: 0, total: 0 };
+        factorStats[key].total++;
+        const fDir = value > 0 ? 1 : -1;
+        if (fDir === actualDir || actualDir === 0) factorStats[key].correct++;
+        else factorStats[key].wrong++;
+      }
+    }
+    const factorAccuracy = Object.entries(factorStats).map(([key, s]) => ({
+      factor: key,
+      label: factorLabels[key] || key,
+      total: s.total,
+      correct: s.correct,
+      accuracy: s.total > 0 ? Math.round(s.correct / s.total * 100) : 0,
+    })).sort((a, b) => b.accuracy - a.accuracy);
+
+    res.json({
+      stats: {
+        total: stats.total || 0,
+        correct: stats.correct || 0,
+        accuracy: stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0,
+        avgError: Math.round((stats.avg_error || 0) * 100) / 100,
+        inRange: stats.in_range || 0,
+        inRangePct: stats.total > 0 ? Math.round((stats.in_range / stats.total) * 100) : 0,
+      },
+      byFund: byFund.map(f => ({
+        ...f,
+        accuracy: f.total > 0 ? Math.round((f.correct / f.total) * 100) : 0,
+        avg_error: Math.round((f.avg_error || 0) * 100) / 100,
+        inRangePct: f.total > 0 ? Math.round((f.in_range / f.total) * 100) : 0,
+      })),
+      factorAccuracy,
+      recent: recent.map(r => ({
+        ...r,
+        factors: undefined, // 不返回原始JSON
+        factorsParsed: (() => { try { return JSON.parse(r.factors || '{}'); } catch { return {}; } })(),
+      })),
+      days,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '获取复盘数据失败: ' + err.message });
+  }
+});
+
+// 手动触发复盘
+router.post('/forecast-reviews/run', async (_req: Request, res: Response) => {
+  try {
+    const reviewed = autoReviewForecasts();
+    res.json({ success: true, reviewed });
+  } catch (err: any) {
+    res.status(500).json({ error: '复盘失败: ' + err.message });
+  }
+});
+
+// 获取单个基金的预测历史
+router.get('/forecasts/fund/:id', async (req: Request, res: Response) => {
+  try {
+    const fundId = Number(req.params.id);
+    const limit = Number(req.query.limit) || 30;
+    const rows = db.prepare(`
+      SELECT f.*, r.actual_nav, r.actual_change_pct, r.direction_correct, r.error_pct, r.within_range, r.analysis
+      FROM forecasts f
+      LEFT JOIN forecast_reviews r ON r.forecast_id = f.id
+      WHERE f.fund_id = ?
+      ORDER BY f.target_date DESC
+      LIMIT ?
+    `).all(fundId, limit) as any[];
+
+    res.json(rows.map(r => ({
+      ...r,
+      factors: (() => { try { return JSON.parse(r.factors || '{}'); } catch { return {}; } })(),
+    })));
+  } catch (err: any) {
+    res.status(500).json({ error: '获取预测历史失败: ' + err.message });
+  }
 });
 
 export default router;

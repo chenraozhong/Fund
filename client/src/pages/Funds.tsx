@@ -531,8 +531,13 @@ export default function Funds() {
                           'bg-red-100 text-red-700'
                         }`}>{pct(f.gain_pct)}</span>
                       </div>
-                      <div className="w-20 text-right text-sm text-gray-600 font-mono">
-                        {costNav > 0 ? costNav.toFixed(4) : '-'}
+                      <div className="w-20 text-right">
+                        <div className="text-sm text-gray-700 font-mono">{costNav > 0 ? costNav.toFixed(4) : '-'}</div>
+                        {costNav > 0 && f.market_nav > 0 && (
+                          <div className={`text-[10px] font-medium ${f.market_nav >= costNav ? 'text-emerald-600' : 'text-red-500'}`}>
+                            {f.market_nav >= costNav ? '盈' : '亏'}{Math.abs((f.market_nav - costNav) / costNav * 100).toFixed(1)}%
+                          </div>
+                        )}
                       </div>
                       <div className="w-28 text-right flex justify-end gap-1" onClick={e => e.stopPropagation()}>
                         <button onClick={() => openTxForm(f)}

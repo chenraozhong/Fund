@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import { api } from '../api'
-import type { FundDetail as FundDetailType, Position, Transaction, AiAdvice, Trade, StrategyResult } from '../api'
+import type { FundDetail as FundDetailType, Position, Transaction, AiAdvice, Trade, StrategyResult, DailySnapshot, ForecastResult } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 function fmt(n: number) {
@@ -58,12 +59,9 @@ export default function FundDetail() {
   const [form, setForm] = useState(emptyForm)
   const [deleteId, setDeleteId] = useState<number | null>(null)
   const [error, setError] = useState('')
-  const [advice, setAdvice] = useState<AiAdvice | null>(null)
-  const [adviceLoading, setAdviceLoading] = useState(false)
-  const [adviceError, setAdviceError] = useState('')
-  const [showAdvice, setShowAdvice] = useState(false)
-  const [editingStrategy, setEditingStrategy] = useState(false)
-  const [strategyForm, setStrategyForm] = useState({ stop_profit_pct: 5, stop_loss_pct: 5, market_nav: 0, base_position_pct: 30 })
+  const [research, setResearch] = useState<any>(null)
+  const [researchLoading, setResearchLoading] = useState(false)
+  const [researchError, setResearchError] = useState('')
   const [splitTx, setSplitTx] = useState<Transaction | null>(null)
   const [splitShares, setSplitShares] = useState<number>(0)
   const [splitting, setSplitting] = useState(false)
@@ -76,13 +74,14 @@ export default function FundDetail() {
   const [gainForm, setGainForm] = useState(0)
   const [navLoading, setNavLoading] = useState(false)
   const [navHint, setNavHint] = useState('')
-  const [navUpdating, setNavUpdating] = useState(false)
-  const [strategy, setStrategy] = useState<StrategyResult | null>(null)
-  const [strategyLoading, setStrategyLoading] = useState(false)
-  const [strategyError, setStrategyError] = useState('')
   const [quickNav, setQuickNav] = useState('')
   const [quickLoading, setQuickLoading] = useState(false)
+  const [latestNavInfo, setLatestNavInfo] = useState<{ nav: number; prevNav: number; date: string; estimatedNav: number | null; estimateTime: string | null } | null>(null)
   const [swingResult, setSwingResult] = useState<any>(null)
+  const [decision, setDecision] = useState<any>(null)
+  const [forecast, setForecast] = useState<ForecastResult | null>(null)
+  const [forecastLoading, setForecastLoading] = useState(false)
+  const [snapshots, setSnapshots] = useState<DailySnapshot[]>([])
   const [editingBase, setEditingBase] = useState(false)
   const [baseForm, setBaseForm] = useState(30)
 
@@ -93,6 +92,7 @@ export default function FundDetail() {
       // 自动获取实时估值并填入快捷净值
       if (d.fund.code) {
         api.getLatestNav(d.fund.code).then(nav => {
+          setLatestNavInfo({ nav: nav.nav, prevNav: (nav as any).prev_nav || 0, date: nav.date, estimatedNav: nav.estimated_nav, estimateTime: nav.estimate_time })
           if (nav.estimated_nav && nav.estimated_nav > 0) {
             setQuickNav(nav.estimated_nav.toFixed(4))
           }
@@ -100,6 +100,9 @@ export default function FundDetail() {
       }
     })
     api.getTrades(fundId).then(setTrades)
+    api.getSnapshots(fundId, 90).then(setSnapshots).catch(() => {})
+    setForecastLoading(true)
+    api.getForecast(fundId).then(setForecast).catch(() => {}).finally(() => setForecastLoading(false))
   }
   useEffect(() => { load() }, [fundId])
 
@@ -108,36 +111,26 @@ export default function FundDetail() {
     if (!nav || nav <= 0) return
     setQuickLoading(true)
     try {
-      const swing = await api.getSwingAdvice(fundId, nav)
+      const [swing, dec] = await Promise.all([
+        api.getSwingAdvice(fundId, nav),
+        api.getDecision(fundId, nav),
+      ])
       setSwingResult(swing)
+      setDecision(dec)
     } catch { /* ignore */ }
     finally { setQuickLoading(false) }
   }
 
-  const fetchStrategy = async () => {
-    setStrategyLoading(true)
-    setStrategyError('')
+  const fetchResearch = async () => {
+    setResearchLoading(true)
+    setResearchError('')
     try {
-      const result = await api.getFundStrategy(fundId)
-      setStrategy(result)
+      const result = await api.getFundResearch(fundId)
+      setResearch(result)
     } catch (err: any) {
-      setStrategyError(err.message)
+      setResearchError(err.message)
     } finally {
-      setStrategyLoading(false)
-    }
-  }
-
-  const fetchAdvice = async () => {
-    setAdviceLoading(true)
-    setAdviceError('')
-    setShowAdvice(true)
-    try {
-      const result = await api.getFundAdvice(fundId)
-      setAdvice(result)
-    } catch (err: any) {
-      setAdviceError(err.message)
-    } finally {
-      setAdviceLoading(false)
+      setResearchLoading(false)
     }
   }
 
@@ -336,20 +329,6 @@ export default function FundDetail() {
 
   const totalTradeProfit = trades.reduce((s, t) => s + t.profit, 0)
 
-  const updateLatestNav = async () => {
-    if (!fund.code) return
-    setNavUpdating(true)
-    try {
-      const result = await api.getLatestNav(fund.code)
-      await api.updateFund(fundId, { market_nav: result.nav })
-      load()
-    } catch (err: any) {
-      setError('获取最新净值失败: ' + err.message)
-    } finally {
-      setNavUpdating(false)
-    }
-  }
-
   const autoFetchNav = async (date: string) => {
     if (!fund.code || !date) { setNavHint(''); return }
     setNavLoading(true)
@@ -423,38 +402,11 @@ export default function FundDetail() {
 
   const selSummary = getSelectionSummary()
 
-  // --- Strategy model ---
   const holdingShares = positions.reduce((s, p) => s + p.holding_shares, 0)
-  const costBasis = totalValue - totalGain // 持仓成本 = 市值 - 盈亏... actually use totalCost
-  const stopProfit = fund.stop_profit_pct || 5
-  const stopLoss = fund.stop_loss_pct || 5
+  const stopProfit = fund.stop_profit_pct || 20
+  const stopLoss = fund.stop_loss_pct || 15
   const mNav = fund.market_nav || 0
   const costNav = holdingShares > 0 ? totalCost / holdingShares : 0
-
-  const scenarios = [-5, -3, -2, -1, 1, 2, 3, 5].map(changePct => {
-    const newNav = mNav > 0 ? mNav * (1 + changePct / 100) : 0
-    const newValue = holdingShares * newNav
-    const newGain = newValue - totalCost
-    const newGainPct = totalCost > 0 ? (newGain / totalCost) * 100 : 0
-    let action = '持有'
-    let actionColor = 'text-gray-600'
-    if (newGainPct >= stopProfit) { action = '止盈卖出'; actionColor = 'text-green-600' }
-    else if (newGainPct <= -stopLoss) { action = '止损卖出'; actionColor = 'text-red-600' }
-    else if (changePct < 0 && newGainPct < 0) { action = '观望/补仓'; actionColor = 'text-amber-600' }
-    else if (changePct > 0 && newGainPct > 0) { action = '持有观望'; actionColor = 'text-blue-600' }
-    return { changePct, newNav, newValue, newGain, newGainPct, action, actionColor }
-  })
-
-  const handleSaveStrategy = async () => {
-    await api.updateFund(fundId, {
-      stop_profit_pct: strategyForm.stop_profit_pct,
-      stop_loss_pct: strategyForm.stop_loss_pct,
-      market_nav: strategyForm.market_nav || undefined,
-      base_position_pct: strategyForm.base_position_pct,
-    })
-    setEditingStrategy(false)
-    load()
-  }
 
   // --- Buy-sell pair profit (multi) ---
   const getPairInfo = () => {
@@ -494,19 +446,58 @@ export default function FundDetail() {
         <button onClick={() => navigate('/funds')} className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
         </button>
-        <div className="flex items-center gap-3 flex-1">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg font-bold" style={{ backgroundColor: fund.color }}>
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg font-bold shrink-0" style={{ backgroundColor: fund.color }}>
             {fund.name.charAt(0).toUpperCase()}
           </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{fund.name}</h1>
-            <p className="text-sm text-gray-500">
-              {fund.code && <span className="text-gray-400 mr-1.5">{fund.code}</span>}
-              {positions.length} 个资产 &middot; {transactions.length} 条交易
-            </p>
+          <div className="flex-1">
+            <div className="flex items-baseline gap-3">
+              <h1 className="text-2xl font-bold text-gray-900">{fund.name}</h1>
+              {fund.code && <span className="text-sm text-gray-400">{fund.code}</span>}
+            </div>
+            <div className="flex items-center gap-3 mt-1 text-sm">
+              <span className="text-gray-500">
+                <span className="font-semibold text-gray-700">{holdingShares.toFixed(2)}</span> 份
+              </span>
+              <span className="text-gray-300">|</span>
+              {latestNavInfo ? (
+                <span className="text-gray-500">
+                  净值 <span className="font-semibold text-gray-700 font-mono">{latestNavInfo.nav.toFixed(4)}</span>
+                  <span className="text-gray-400 ml-1">({latestNavInfo.date})</span>
+                  {latestNavInfo.estimatedNav && latestNavInfo.estimatedNav > 0 && (
+                    <>
+                      <span className="text-gray-300 mx-1">→</span>
+                      <span className="font-mono font-semibold text-indigo-600">估 {latestNavInfo.estimatedNav.toFixed(4)}</span>
+                      {latestNavInfo.estimateTime && <span className="text-gray-400 ml-1 text-xs">{latestNavInfo.estimateTime}</span>}
+                    </>
+                  )}
+                </span>
+              ) : mNav > 0 ? (
+                <span className="text-gray-500">净值 <span className="font-semibold text-gray-700 font-mono">{mNav.toFixed(4)}</span></span>
+              ) : null}
+              <span className="text-gray-300">|</span>
+              <span className="text-gray-400 text-xs">止盈{stopProfit}% / 止损{stopLoss}%</span>
+            </div>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {/* 底仓设置 */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
+            <svg className="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            <span className="text-xs text-amber-700 font-medium">底仓</span>
+            <select
+              value={fund.base_position_pct ?? 30}
+              onChange={async (e) => {
+                await api.updateFund(fundId, { base_position_pct: Number(e.target.value) })
+                load()
+              }}
+              className="text-xs font-bold text-amber-800 bg-transparent border-none outline-none cursor-pointer py-0.5"
+            >
+              {[0, 10, 20, 30, 40, 50, 60, 70, 80].map(v => (
+                <option key={v} value={v}>{v}%</option>
+              ))}
+            </select>
+          </div>
           <button
             onClick={() => { setShowAdjust(true); setAdjustMode('gain'); setGainForm(Math.round(totalGain * 100) / 100); setAdjustForm({ shares: holdingShares, nav: costNav }) }}
             className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 text-sm font-medium transition-colors"
@@ -525,7 +516,39 @@ export default function FundDetail() {
       </div>
 
       {/* Fund Summary Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {(() => {
+        // 当日收益计算
+        // prevNav = 估值接口的dwjz，始终是上一交易日官方净值（最可靠的基准）
+        // 今日净值已出(officialIsToday) → 用官方净值；否则用估值
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+        const prevNavVal = latestNavInfo?.prevNav || 0;
+        const officialIsToday = latestNavInfo?.date === todayStr;
+        const officialNav = latestNavInfo?.nav || 0;
+        const estNav = latestNavInfo?.estimatedNav && latestNavInfo.estimatedNav > 0 ? latestNavInfo.estimatedNav : 0;
+
+        // 今日净值已出 → 用官方净值，不再看估值；否则用估值
+        const currentNav = officialIsToday ? officialNav : estNav;
+        const isEstimate = !officialIsToday && estNav > 0;
+
+        // 日初持仓 = 当前持仓 + 今日卖出 - 今日买入
+        let todayBought = 0, todaySold = 0;
+        for (const tx of transactions) {
+          if (tx.date === todayStr) {
+            if (tx.type === 'buy') todayBought += tx.shares;
+            else if (tx.type === 'sell') todaySold += tx.shares;
+          }
+        }
+        const startOfDayShares = holdingShares + todaySold - todayBought;
+
+        let dailyGain: number | null = null;
+        let dailyPct: number | null = null;
+        if (startOfDayShares > 0 && currentNav > 0 && prevNavVal > 0) {
+          dailyGain = startOfDayShares * (currentNav - prevNavVal);
+          dailyPct = ((currentNav - prevNavVal) / prevNavVal) * 100;
+        }
+        return (
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
           <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">总市值</div>
           <div className="text-xl font-bold text-gray-900">{fmt(totalValue)}</div>
@@ -534,8 +557,48 @@ export default function FundDetail() {
           <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">总成本</div>
           <div className="text-xl font-bold text-gray-900">{fmt(totalCost)}</div>
         </div>
+        <div className={`rounded-xl border shadow-sm p-4 ${
+          mNav > 0 && costNav > 0
+            ? mNav >= costNav ? 'bg-emerald-50/50 border-emerald-200' : 'bg-red-50/50 border-red-200'
+            : 'bg-white border-gray-200'
+        }`}>
+          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">成本净值</div>
+          <div className="text-xl font-bold text-gray-900 font-mono">{costNav > 0 ? costNav.toFixed(4) : '-'}</div>
+          {mNav > 0 && costNav > 0 && (
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <span className="text-[11px] text-gray-400">市场 {mNav.toFixed(4)}</span>
+              <span className={`text-[11px] font-bold ${mNav >= costNav ? 'text-emerald-600' : 'text-red-600'}`}>
+                {mNav >= costNav ? '盈' : '亏'}{Math.abs((mNav - costNav) / costNav * 100).toFixed(2)}%
+              </span>
+            </div>
+          )}
+        </div>
+        <div className={`rounded-xl border shadow-sm p-4 ${
+          dailyGain !== null
+            ? dailyGain >= 0 ? 'bg-red-50/50 border-red-200' : 'bg-green-50/50 border-green-200'
+            : 'bg-white border-gray-200'
+        }`}>
+          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">当日收益</div>
+          {dailyGain !== null ? (
+            <>
+              <div className={`text-xl font-bold ${dailyGain >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {dailyGain >= 0 ? '+' : ''}{fmt(dailyGain)}
+              </div>
+              <div className="mt-0.5 flex items-center gap-1.5">
+                <span className={`text-[11px] font-bold ${dailyPct! >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  {dailyPct! >= 0 ? '+' : ''}{dailyPct!.toFixed(2)}%
+                </span>
+                <span className="text-[11px] text-gray-400">
+                  {isEstimate ? '估' : '官'}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="text-xl font-bold text-gray-400">-</div>
+          )}
+        </div>
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">盈亏</div>
+          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">累计盈亏</div>
           <div className={`text-xl font-bold ${totalGain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             {totalGain >= 0 ? '+' : ''}{fmt(totalGain)}
           </div>
@@ -547,6 +610,174 @@ export default function FundDetail() {
           </div>
         </div>
       </div>
+        )
+      })()}
+
+      {/* 成本/收益趋势图 */}
+      {snapshots.length >= 2 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">成本 / 收益趋势</h3>
+                <p className="text-xs text-gray-400">近{snapshots.length}天 · 每日净值刷新后自动记录</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded" /> 成本净值</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded" /> 市场净值</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-500 inline-block rounded" /> 收益率%</span>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={snapshots.map(s => ({
+              date: s.date.slice(5),
+              costNav: s.cost_nav,
+              marketNav: s.market_nav,
+              gainPct: s.gain_pct,
+              gain: s.gain,
+            }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="nav" tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+              <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11 }} unit="%" domain={['auto', 'auto']} />
+              <Tooltip
+                formatter={(value: number, name: string) => {
+                  if (name === 'costNav') return [value.toFixed(4), '成本净值']
+                  if (name === 'marketNav') return [value.toFixed(4), '市场净值']
+                  if (name === 'gainPct') return [value.toFixed(2) + '%', '收益率']
+                  return [value, name]
+                }}
+                labelFormatter={(label) => `日期: ${label}`}
+              />
+              <ReferenceLine yAxisId="pct" y={0} stroke="#9ca3af" strokeDasharray="3 3" />
+              <Line yAxisId="nav" type="monotone" dataKey="costNav" stroke="#3b82f6" strokeWidth={2} dot={false} />
+              <Line yAxisId="nav" type="monotone" dataKey="marketNav" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              <Line yAxisId="pct" type="monotone" dataKey="gainPct" stroke="#10b981" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 明日行情预测 */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+        <div className="flex items-center gap-2.5 mb-3">
+          <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+            <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">明日行情预测</h3>
+            <p className="text-xs text-gray-400">多因子模型综合预测 · 仅供参考</p>
+          </div>
+          {forecastLoading && <span className="text-xs text-gray-400 animate-pulse ml-auto">分析中...</span>}
+        </div>
+
+        {forecast?.prediction ? (
+          <div className="space-y-4">
+            {/* 预测结果 */}
+            <div className={`rounded-xl p-4 ${
+              forecast.prediction.direction === 'up' ? 'bg-red-50 border border-red-200' :
+              forecast.prediction.direction === 'down' ? 'bg-green-50 border border-green-200' :
+              'bg-gray-50 border border-gray-200'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-lg font-black ${
+                    forecast.prediction.direction === 'up' ? 'bg-red-500 text-white' :
+                    forecast.prediction.direction === 'down' ? 'bg-green-500 text-white' :
+                    'bg-gray-300 text-white'
+                  }`}>
+                    {forecast.prediction.direction === 'up' ? '涨' : forecast.prediction.direction === 'down' ? '跌' : '平'}
+                  </div>
+                  <div>
+                    <div className={`text-lg font-bold ${
+                      forecast.prediction.direction === 'up' ? 'text-red-700' :
+                      forecast.prediction.direction === 'down' ? 'text-green-700' :
+                      'text-gray-700'
+                    }`}>
+                      预测{forecast.prediction.direction === 'up' ? '上涨' : forecast.prediction.direction === 'down' ? '下跌' : '震荡'}
+                      <span className="ml-1.5 font-mono">{forecast.prediction.predictedChangePct >= 0 ? '+' : ''}{forecast.prediction.predictedChangePct.toFixed(2)}%</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      预测净值 <span className="font-mono font-medium">{forecast.prediction.predictedNav.toFixed(4)}</span>
+                      <span className="mx-1.5 text-gray-300">|</span>
+                      区间 {forecast.prediction.navRange.low.toFixed(4)} ~ {forecast.prediction.navRange.high.toFixed(4)}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-gray-400">信心度</div>
+                  <div className="text-xl font-bold text-gray-700">{forecast.prediction.confidence}%</div>
+                </div>
+              </div>
+            </div>
+
+            {/* 投资策略 */}
+            <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
+                  forecast.strategy.action === 'buy' ? 'bg-emerald-100 text-emerald-700' :
+                  forecast.strategy.action === 'sell' ? 'bg-red-100 text-red-700' :
+                  'bg-gray-100 text-gray-600'
+                }`}>
+                  {forecast.strategy.action === 'buy' ? '买入' : forecast.strategy.action === 'sell' ? '卖出' : '持有'}
+                </span>
+                {forecast.strategy.amount > 0 && (
+                  <span className="text-sm font-medium text-blue-800">{forecast.strategy.shares}份 · ¥{forecast.strategy.amount}</span>
+                )}
+              </div>
+              <div className="space-y-1">
+                {forecast.strategy.strategies.map((s, i) => (
+                  <div key={i} className="text-xs text-blue-800 leading-relaxed">• {s}</div>
+                ))}
+              </div>
+            </div>
+
+            {/* 因子分解 */}
+            <div>
+              <div className="text-xs text-gray-400 mb-2">预测因子分解</div>
+              <div className="grid grid-cols-4 lg:grid-cols-7 gap-2">
+                {Object.entries(forecast.factors).map(([key, f]) => (
+                  <div key={key} className="text-center p-2 rounded-lg bg-gray-50">
+                    <div className="text-[10px] text-gray-400 mb-0.5">{f.label}</div>
+                    <div className={`text-sm font-bold font-mono ${f.value > 0 ? 'text-red-600' : f.value < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                      {f.value > 0 ? '+' : ''}{f.value.toFixed(3)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 近20日统计 + 预测理由 */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="rounded-lg bg-gray-50 p-3">
+                <div className="text-xs text-gray-400 mb-1.5">近20日统计</div>
+                <div className="flex gap-4 text-xs">
+                  <div><span className="text-red-600 font-medium">{forecast.stats.recent20.upDays}涨</span> / <span className="text-green-600 font-medium">{forecast.stats.recent20.downDays}跌</span></div>
+                  <div>日均涨 <span className="text-red-600 font-mono">+{forecast.stats.recent20.avgUp.toFixed(2)}%</span></div>
+                  <div>日均跌 <span className="text-green-600 font-mono">{forecast.stats.recent20.avgDown.toFixed(2)}%</span></div>
+                  <div>波动率 <span className="font-mono">{forecast.stats.volatility.toFixed(1)}%</span></div>
+                </div>
+              </div>
+              <div className="rounded-lg bg-gray-50 p-3">
+                <div className="text-xs text-gray-400 mb-1.5">预测依据</div>
+                <div className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {forecast.reasoning.map((r, i) => (
+                    <div key={i} className="text-[11px] text-gray-600 leading-relaxed">{r}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : forecast?.message ? (
+          <div className="text-sm text-gray-400 py-4 text-center">{forecast.message}</div>
+        ) : !forecastLoading ? (
+          <div className="text-sm text-gray-400 py-4 text-center">暂无预测数据</div>
+        ) : null}
+      </div>
 
       {/* 实时净值快速决策 */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
@@ -555,8 +786,8 @@ export default function FundDetail() {
             <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">实时决策</h3>
-            <p className="text-xs text-gray-400">输入盘中实时净值，即时给出买卖建议</p>
+            <h3 className="text-sm font-semibold text-gray-900">综合决策</h3>
+            <p className="text-xs text-gray-400">输入实时净值 → 技术面+基本面+消息面综合分析 → 具体买卖份额</p>
           </div>
         </div>
         <div className="flex gap-2 items-end">
@@ -578,8 +809,303 @@ export default function FundDetail() {
           </button>
         </div>
 
-        {swingResult && (
+        {/* === 统一决策卡片 === */}
+        {decision && (
           <div className="mt-4 pt-4 border-t border-gray-100">
+            {/* 大操作指示 */}
+            <div className={`rounded-xl p-4 mb-4 ${
+              decision.action === 'buy' ? 'bg-emerald-50 border border-emerald-200' :
+              decision.action === 'sell' ? 'bg-red-50 border border-red-200' :
+              'bg-gray-50 border border-gray-200'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl font-black ${
+                    decision.action === 'buy' ? 'bg-emerald-500 text-white' :
+                    decision.action === 'sell' ? 'bg-red-500 text-white' :
+                    'bg-gray-300 text-white'
+                  }`}>
+                    {decision.action === 'buy' ? '买' : decision.action === 'sell' ? '卖' : '持'}
+                  </div>
+                  <div>
+                    <div className={`text-lg font-bold ${
+                      decision.action === 'buy' ? 'text-emerald-800' :
+                      decision.action === 'sell' ? 'text-red-800' :
+                      'text-gray-800'
+                    }`}>
+                      {decision.action === 'buy' ? `买入 ${decision.shares} 份` :
+                       decision.action === 'sell' ? `卖出 ${decision.shares} 份` :
+                       '持有观望'}
+                    </div>
+                    {decision.amount > 0 && (
+                      <div className="text-sm text-gray-600">
+                        {decision.action === 'buy' ? '投入' : '回收'} {fmt(decision.amount)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-2xl font-black ${
+                    decision.compositeScore >= 20 ? 'text-emerald-600' :
+                    decision.compositeScore <= -20 ? 'text-red-600' :
+                    'text-amber-600'
+                  }`}>{decision.compositeScore > 0 ? '+' : ''}{decision.compositeScore}</div>
+                  <div className="text-[10px] text-gray-400 uppercase tracking-wider">综合评分</div>
+                </div>
+              </div>
+
+              {/* 完整循环计划 - 核心降成本逻辑 */}
+              {decision.cycle && (
+                <div className="mt-3 pt-3 border-t border-dashed" style={{ borderColor: decision.action === 'buy' ? '#a7f3d0' : '#fecaca' }}>
+                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">完整循环（高卖低买 = 真降成本）</div>
+                  <div className="flex items-center gap-2">
+                    {/* Step 1 */}
+                    <div className={`flex-1 rounded-lg p-2 text-center ${decision.action === 'sell' ? 'bg-red-100/80 ring-2 ring-red-300' : 'bg-emerald-100/80 ring-2 ring-emerald-300'}`}>
+                      <div className="text-[10px] text-gray-500 mb-0.5">现在 · {decision.cycle.step1.action}</div>
+                      <div className="text-sm font-bold font-mono">{decision.cycle.step1.nav.toFixed(4)}</div>
+                      <div className="text-[10px] text-gray-600">{decision.cycle.step1.shares}份 · ¥{decision.cycle.step1.amount}</div>
+                    </div>
+                    {/* Arrow */}
+                    <div className="flex flex-col items-center shrink-0">
+                      <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+                      <div className="text-[9px] text-gray-400">等待</div>
+                    </div>
+                    {/* Step 2 */}
+                    <div className={`flex-1 rounded-lg p-2 text-center border-2 border-dashed ${decision.action === 'sell' ? 'border-emerald-300 bg-emerald-50/50' : 'border-red-300 bg-red-50/50'}`}>
+                      <div className="text-[10px] text-gray-500 mb-0.5">目标 · {decision.cycle.step2.action}</div>
+                      <div className="text-sm font-bold font-mono">{decision.cycle.step2.nav.toFixed(4)}</div>
+                      <div className="text-[10px] text-gray-600">{decision.cycle.step2.shares}份 · ¥{decision.cycle.step2.amount}</div>
+                    </div>
+                    {/* Result */}
+                    <div className="flex flex-col items-center shrink-0">
+                      <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4" /></svg>
+                    </div>
+                    <div className="flex-1 rounded-lg p-2 text-center bg-emerald-50 border border-emerald-200">
+                      <div className="text-[10px] text-emerald-600 mb-0.5">循环完成</div>
+                      <div className="text-sm font-black text-emerald-700">降 {decision.cycle.cycleCostDrop.toFixed(4)}</div>
+                      <div className="text-[10px] text-emerald-600">利润 ¥{decision.cycle.cycleProfit} · 新成本 {decision.cycle.newCostNavAfterCycle.toFixed(4)}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 单步影响（买入时的直接成本变化） */}
+              {decision.action === 'buy' && decision.impact.costChange !== 0 && (
+                <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-100">
+                  <div className="text-center">
+                    <div className="text-[10px] text-gray-500">买入后份额</div>
+                    <div className="text-sm font-bold text-gray-800">{decision.impact.newShares}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px] text-gray-500">买入后成本</div>
+                    <div className="text-sm font-bold font-mono text-gray-800">{decision.impact.newCostNav.toFixed(4)}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px] text-gray-500">直接降幅</div>
+                    <div className={`text-sm font-bold ${decision.impact.costChange > 0 ? 'text-emerald-600' : 'text-gray-500'}`}>
+                      {decision.impact.costChange > 0 ? `降${decision.impact.costChange.toFixed(4)}` : '不变'}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 大师策略指标 */}
+            {decision.masterSignals && (
+              <div className="grid grid-cols-5 gap-2 mb-4">
+                <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
+                  <div className="text-[10px] text-gray-400">恐惧/贪婪</div>
+                  <div className={`text-lg font-black ${decision.masterSignals.fearGreed < 30 ? 'text-emerald-600' : decision.masterSignals.fearGreed > 70 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {decision.masterSignals.fearGreed}
+                  </div>
+                  <div className="text-[9px] text-gray-400">{decision.masterSignals.fearGreed < 30 ? '恐惧=机会' : decision.masterSignals.fearGreed > 70 ? '贪婪=风险' : '中性'}</div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
+                  <div className="text-[10px] text-gray-400">周期定位</div>
+                  <div className="text-sm font-bold text-gray-800">{decision.masterSignals.cycleLabel}</div>
+                  <div className="text-[9px] text-gray-400">Howard Marks</div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
+                  <div className="text-[10px] text-gray-400">信念强度</div>
+                  <div className={`text-lg font-black ${decision.masterSignals.conviction > 1.3 ? 'text-emerald-600' : decision.masterSignals.conviction < 0.8 ? 'text-amber-600' : 'text-gray-700'}`}>
+                    {decision.masterSignals.conviction}x
+                  </div>
+                  <div className="text-[9px] text-gray-400">{decision.masterSignals.conviction >= 1.6 ? '三维共振' : decision.masterSignals.conviction >= 1.3 ? '单维强信号' : decision.masterSignals.conviction < 0.8 ? '信号分歧' : '一般'}</div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
+                  <div className="text-[10px] text-gray-400">价值乘数</div>
+                  <div className={`text-lg font-black ${decision.masterSignals.valueMultiplier > 1.5 ? 'text-emerald-600' : 'text-gray-700'}`}>
+                    {decision.masterSignals.valueMultiplier}x
+                  </div>
+                  <div className="text-[9px] text-gray-400">Graham安全边际</div>
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
+                  <div className="text-[10px] text-gray-400">动态止盈</div>
+                  <div className="text-lg font-black text-gray-700">
+                    {decision.masterSignals.dynamicTakeProfit}%
+                  </div>
+                  <div className="text-[9px] text-gray-400">ATR自适应</div>
+                </div>
+              </div>
+            )}
+
+            {/* 三维评分条 */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              {[
+                { label: '技术面(60%)', score: decision.dimensions.technical.score, color: 'blue', detail: `RSI ${decision.dimensions.technical.rsi.toFixed(0)} · ${decision.dimensions.technical.trend === 'strong_up' ? '强势' : decision.dimensions.technical.trend === 'up' ? '偏多' : decision.dimensions.technical.trend === 'down' ? '偏空' : decision.dimensions.technical.trend === 'strong_down' ? '弱势' : '震荡'}` },
+                { label: '基本面(20%)', score: decision.dimensions.fundamental.score, color: 'purple', detail: decision.dimensions.fundamental.highlights[0] || '数据正常' },
+                { label: '消息面(20%)', score: decision.dimensions.news.score, color: 'amber', detail: decision.dimensions.news.sentiment },
+              ].map(d => (
+                <div key={d.label} className="bg-white rounded-lg border border-gray-200 p-2.5">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-gray-600">{d.label}</span>
+                    <span className={`text-sm font-bold ${d.score >= 20 ? 'text-emerald-600' : d.score <= -20 ? 'text-red-600' : 'text-amber-600'}`}>
+                      {d.score > 0 ? '+' : ''}{d.score}
+                    </span>
+                  </div>
+                  {/* 分数条 */}
+                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+                    <div className={`h-full rounded-full transition-all ${d.score >= 0 ? 'bg-emerald-400' : 'bg-red-400'}`}
+                      style={{ width: `${Math.min(Math.abs(d.score) + 50, 100)}%`, marginLeft: d.score < 0 ? `${50 + d.score / 2}%` : '50%', maxWidth: `${Math.abs(d.score / 2)}%` }} />
+                  </div>
+                  <div className="text-[10px] text-gray-400 truncate">{d.detail}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* ====== 详细决策报告 ====== */}
+            <div className="space-y-3">
+
+              {/* 持仓概况 */}
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2">当前持仓</div>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-[11px]">
+                  <div><div className="text-gray-400">总份额</div><div className="font-bold text-gray-800">{decision.position.holdingShares}</div></div>
+                  <div><div className="text-gray-400">成本净值</div><div className="font-bold text-gray-800 font-mono">{decision.position.costNav.toFixed(4)}</div></div>
+                  <div><div className="text-gray-400">盈亏</div><div className={`font-bold ${decision.position.gainPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{decision.position.gainPct >= 0 ? '+' : ''}{decision.position.gainPct.toFixed(2)}%</div></div>
+                  <div><div className="text-gray-400">底仓</div><div className="font-bold text-amber-700">{decision.position.baseShares}份</div></div>
+                  <div><div className="text-gray-400">活仓</div><div className="font-bold text-blue-700">{decision.position.swingShares}份</div></div>
+                  <div><div className="text-gray-400">市值</div><div className="font-bold text-gray-800">{fmt(decision.position.marketValue)}</div></div>
+                </div>
+              </div>
+
+              {/* 决策依据（主要理由） */}
+              <div className="bg-white rounded-lg border border-gray-200 p-3">
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2">决策依据</div>
+                <div className="space-y-1.5">
+                  {decision.reasoning.map((r: string, i: number) => {
+                    // 根据前缀标记颜色
+                    const isMaster = r.startsWith('[');
+                    const tag = isMaster ? r.match(/^\[([^\]]+)\]/)?.[1] || '' : '';
+                    const content = isMaster ? r.replace(/^\[[^\]]+\]\s*/, '') : r;
+                    const tagColor = tag.includes('Buffett') || tag.includes('Graham') ? 'bg-blue-100 text-blue-700'
+                      : tag.includes('Soros') || tag.includes('止损') || tag.includes('熔断') ? 'bg-red-100 text-red-700'
+                      : tag.includes('Marks') || tag.includes('确认') ? 'bg-purple-100 text-purple-700'
+                      : tag.includes('Lynch') ? 'bg-green-100 text-green-700'
+                      : tag.includes('Livermore') ? 'bg-amber-100 text-amber-700'
+                      : tag.includes('风控') || tag.includes('赎回') || tag.includes('警告') || tag.includes('减速') ? 'bg-orange-100 text-orange-700'
+                      : tag.includes('动态') || tag.includes('网格') ? 'bg-cyan-100 text-cyan-700'
+                      : 'bg-gray-100 text-gray-600';
+                    return (
+                      <div key={i} className="text-xs text-gray-700 flex items-start gap-2">
+                        <span className={`shrink-0 mt-0.5 ${i === 0 ? 'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white' : 'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white'} ${
+                          i === 0 ? (decision.action === 'buy' ? 'bg-emerald-500' : decision.action === 'sell' ? 'bg-red-500' : 'bg-gray-400') : 'bg-gray-300'
+                        }`}>{i + 1}</span>
+                        <div className="flex-1">
+                          {tag && <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold mr-1.5 ${tagColor}`}>{tag}</span>}
+                          <span>{content}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* 技术面信号详情 */}
+              {decision.dimensions.technical.signals.length > 0 && (
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2">技术面信号（权重60%）</div>
+                  <div className="space-y-1">
+                    {decision.dimensions.technical.signals.map((s: string, i: number) => (
+                      <div key={i} className="text-[11px] text-gray-600 flex items-start gap-1.5">
+                        <span className={`shrink-0 mt-1 w-1.5 h-1.5 rounded-full ${
+                          s.includes('买') || s.includes('超卖') || s.includes('支撑') || s.includes('多') ? 'bg-emerald-400' :
+                          s.includes('卖') || s.includes('超买') || s.includes('阻力') || s.includes('空') ? 'bg-red-400' :
+                          'bg-amber-400'
+                        }`} />
+                        <span>{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 基本面 + 消息面摘要 */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">基本面（权重20%）</div>
+                  <div className={`text-sm font-bold mb-1 ${decision.dimensions.fundamental.score >= 20 ? 'text-emerald-600' : decision.dimensions.fundamental.score <= -20 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {decision.dimensions.fundamental.score > 0 ? '+' : ''}{decision.dimensions.fundamental.score}分
+                  </div>
+                  {decision.dimensions.fundamental.highlights.map((h: string, i: number) => (
+                    <div key={i} className="text-[10px] text-gray-500 leading-relaxed">• {h}</div>
+                  ))}
+                  {decision.dimensions.fundamental.highlights.length === 0 && <div className="text-[10px] text-gray-400">数据正常</div>}
+                </div>
+                <div className="bg-white rounded-lg border border-gray-200 p-3">
+                  <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">消息面（权重20%）</div>
+                  <div className={`text-sm font-bold mb-1 ${decision.dimensions.news.score > 20 ? 'text-emerald-600' : decision.dimensions.news.score < -20 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {decision.dimensions.news.sentiment} {decision.dimensions.news.score > 0 ? '+' : ''}{decision.dimensions.news.score}分
+                  </div>
+                  {decision.dimensions.news.bullish?.slice(0, 2).map((n: string, i: number) => (
+                    <div key={`b${i}`} className="text-[10px] text-emerald-600 leading-relaxed truncate">📈 {n.slice(0, 35)}</div>
+                  ))}
+                  {decision.dimensions.news.bearish?.slice(0, 2).map((n: string, i: number) => (
+                    <div key={`r${i}`} className="text-[10px] text-red-600 leading-relaxed truncate">📉 {n.slice(0, 35)}</div>
+                  ))}
+                  {!decision.dimensions.news.bullish?.length && !decision.dimensions.news.bearish?.length && <div className="text-[10px] text-gray-400">无明显多空信号</div>}
+                </div>
+              </div>
+
+              {/* 风险提示 */}
+              {decision.riskWarnings && (
+                <div className="bg-red-50/50 rounded-lg border border-red-100 p-3">
+                  <div className="text-[10px] font-semibold text-red-400 uppercase tracking-wide mb-2">风险提示</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                    {decision.riskWarnings.worstCaseLoss > 0 && (
+                      <div><span className="text-gray-400">最坏损失</span><div className="font-bold text-red-600">{fmt(decision.riskWarnings.worstCaseLoss)}</div></div>
+                    )}
+                    <div><span className="text-gray-400">赎回费率</span><div className="font-bold text-gray-700">{decision.riskWarnings.redeemFeeRate}%</div></div>
+                    <div><span className="text-gray-400">持有天数</span><div className={`font-bold ${decision.riskWarnings.daysSinceLastBuy < 7 ? 'text-red-600' : 'text-gray-700'}`}>{decision.riskWarnings.daysSinceLastBuy}天{decision.riskWarnings.daysSinceLastBuy < 7 ? '（惩罚期）' : ''}</div></div>
+                    <div><span className="text-gray-400">组合亏损</span><div className={`font-bold ${decision.riskWarnings.totalLossPct > 15 ? 'text-red-600' : 'text-gray-700'}`}>{decision.riskWarnings.totalLossPct}%{decision.riskWarnings.circuitBreaker ? '（已熔断）' : ''}</div></div>
+                  </div>
+                  {decision.riskWarnings.redeemFeeLevels?.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-[10px] text-gray-400 cursor-pointer hover:text-gray-600">查看赎回费率阶梯</summary>
+                      <div className="mt-1 grid grid-cols-2 gap-1 text-[10px]">
+                        {decision.riskWarnings.redeemFeeLevels.map((l: any, i: number) => (
+                          <div key={i} className={`flex justify-between px-2 py-0.5 rounded ${decision.riskWarnings.daysSinceLastBuy >= l.minDays && decision.riskWarnings.daysSinceLastBuy <= l.maxDays ? 'bg-amber-100 font-bold' : ''}`}>
+                            <span className="text-gray-500">{l.label}</span>
+                            <span className="text-gray-700">{l.feeRate}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {/* 底部汇总 */}
+              <div className="flex items-center justify-between text-[10px] text-gray-400 px-1">
+                <span>置信度 {decision.confidence}% · 紧急度 {decision.urgency === 'high' ? '高' : decision.urgency === 'medium' ? '中' : '低'}</span>
+                <span>评分 {decision.compositeScore > 0 ? '+' : ''}{decision.compositeScore} · 技术60%+基本面20%+消息面20%</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {swingResult && (
+          <div className={`${decision ? 'mt-3 pt-3 border-t border-gray-100' : 'mt-4 pt-4 border-t border-gray-100'}`}>
             {/* 净值对比 */}
             <div className="text-xs text-gray-500 mb-3">
               实时净值 <strong className="text-gray-900">{fmtNav(swingResult.nav)}</strong>
@@ -838,513 +1364,151 @@ export default function FundDetail() {
         )}
       </div>
 
-      {/* Strategy Model */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-orange-50 text-orange-600 flex items-center justify-center">
-              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-gray-900">策略模型</h3>
-              <p className="text-xs text-gray-400">
-                止盈 {stopProfit}% / 止损 {stopLoss}% / 底仓 {fund.base_position_pct ?? 30}%
-                {mNav > 0 && <> &middot; 当前净值 {fmtNav(mNav)}</>}
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-3">
-            {fund.code && (
-              <button
-                onClick={updateLatestNav}
-                disabled={navUpdating}
-                className="text-xs text-green-600 hover:text-green-800 font-medium disabled:opacity-50"
-              >
-                {navUpdating ? '更新中...' : '获取最新净值'}
-              </button>
-            )}
-            <button
-              onClick={() => { setEditingStrategy(!editingStrategy); setStrategyForm({ stop_profit_pct: stopProfit, stop_loss_pct: stopLoss, market_nav: mNav, base_position_pct: fund.base_position_pct ?? 30 }) }}
-              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-            >
-              {editingStrategy ? '取消' : '设置'}
-            </button>
-          </div>
-        </div>
-
-        {/* Settings form */}
-        {editingStrategy && (
-          <div className="px-5 py-4 bg-gray-50 border-b border-gray-100">
-            <div className="flex flex-wrap gap-4 items-end">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">止盈线 (%)</label>
-                <input type="number" step="0.1" value={strategyForm.stop_profit_pct} onChange={e => setStrategyForm({ ...strategyForm, stop_profit_pct: Number(e.target.value) })}
-                  className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">止损线 (%)</label>
-                <input type="number" step="0.1" value={strategyForm.stop_loss_pct} onChange={e => setStrategyForm({ ...strategyForm, stop_loss_pct: Number(e.target.value) })}
-                  className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">当前市场净值</label>
-                <input type="number" step="0.0001" value={strategyForm.market_nav || ''} onChange={e => setStrategyForm({ ...strategyForm, market_nav: Number(e.target.value) })}
-                  className="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0.0000" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">底仓比例 (%)</label>
-                <input type="number" step="5" min="0" max="100" value={strategyForm.base_position_pct} onChange={e => setStrategyForm({ ...strategyForm, base_position_pct: Number(e.target.value) })}
-                  className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                {holdingShares > 0 && (
-                  <p className="text-[11px] text-amber-600 mt-1">
-                    = {fmtNum(holdingShares * strategyForm.base_position_pct / 100, 2)}份
-                    {(strategyForm.market_nav || mNav) > 0 && <> ≈ {fmt(holdingShares * strategyForm.base_position_pct / 100 * (strategyForm.market_nav || mNav))}</>}
-                  </p>
-                )}
-              </div>
-              <button onClick={handleSaveStrategy} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors">
-                保存
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Scenario table */}
-        {mNav > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 text-xs text-gray-500">
-                  <th className="px-4 py-2.5 text-left font-medium">明日涨跌</th>
-                  <th className="px-4 py-2.5 text-right font-medium">预估净值</th>
-                  <th className="px-4 py-2.5 text-right font-medium">预估市值</th>
-                  <th className="px-4 py-2.5 text-right font-medium">预估盈亏</th>
-                  <th className="px-4 py-2.5 text-right font-medium">收益率</th>
-                  <th className="px-4 py-2.5 text-left font-medium">建议操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {scenarios.map(s => (
-                  <tr key={s.changePct} className={`hover:bg-gray-50 ${s.changePct === 0 ? 'bg-blue-50/30' : ''}`}>
-                    <td className={`px-4 py-2.5 font-medium ${s.changePct > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {s.changePct > 0 ? '+' : ''}{s.changePct}%
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono">{s.newNav.toFixed(4)}</td>
-                    <td className="px-4 py-2.5 text-right">{fmt(s.newValue)}</td>
-                    <td className={`px-4 py-2.5 text-right font-medium ${s.newGain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {s.newGain >= 0 ? '+' : ''}{fmt(s.newGain)}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right ${s.newGainPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {pct(s.newGainPct)}
-                    </td>
-                    <td className={`px-4 py-2.5 font-medium ${s.actionColor}`}>{s.action}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="px-4 py-2 text-xs text-gray-400 border-t border-gray-100">
-              持仓均价 {fmtNav(costNav)} &middot; 当前净值 {fmtNav(mNav)} &middot; 持有 {fmtNum(holdingShares, 2)} 份
-            </div>
-          </div>
-        ) : (
-          <div className="px-5 py-8 text-center text-sm text-gray-400">
-            请先设置当前市场净值，才能生成策略建议
-          </div>
-        )}
-      </div>
-
-      {/* Local Strategy Engine */}
+      {/* 消息面 + 基本面研究 */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center">
-              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" /></svg>
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-gray-900">量化策略分析</h3>
-              <p className="text-xs text-gray-400">RSI / MACD / 布林带 / 波动率 / 大盘环境 / 综合评分</p>
+              <h3 className="text-sm font-semibold text-gray-900">消息面 + 基本面</h3>
+              <p className="text-xs text-gray-400">自动获取行业新闻和基金基本面数据，AI综合分析</p>
             </div>
           </div>
-          <button onClick={fetchStrategy} disabled={strategyLoading}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg hover:bg-cyan-100 disabled:opacity-50 transition-colors">
-            {strategyLoading
-              ? <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>分析中...</>
-              : <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>{strategy ? '重新分析' : '开始分析'}</>}
+          <button
+            onClick={fetchResearch}
+            disabled={researchLoading}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg hover:bg-cyan-100 disabled:opacity-50 transition-colors"
+          >
+            {researchLoading ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                获取中...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                {research ? '刷新' : '开始研究'}
+              </>
+            )}
           </button>
         </div>
 
-        {strategyError && <div className="px-5 py-3 bg-red-50 text-red-700 text-sm">{strategyError}</div>}
-
-        {strategy && (
-          <div className="divide-y divide-gray-100">
-            {/* 综合评分和判定 */}
-            <div className="px-5 py-4">
-              <div className="flex items-center gap-4 mb-2">
-                <div className="flex items-center gap-2">
-                  <span className={`text-2xl font-black ${strategy.summary.verdictColor}`}>{strategy.summary.verdict}</span>
-                  <span className={`text-3xl font-black tabular-nums ${strategy.compositeScore >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    {strategy.compositeScore > 0 ? '+' : ''}{strategy.compositeScore}
-                  </span>
-                </div>
-                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full transition-all ${strategy.compositeScore >= 30 ? 'bg-emerald-500' : strategy.compositeScore >= 0 ? 'bg-blue-400' : strategy.compositeScore >= -30 ? 'bg-amber-400' : 'bg-red-500'}`}
-                    style={{ width: `${Math.max(5, (strategy.compositeScore + 100) / 2)}%` }} />
-                </div>
-              </div>
-              <p className="text-sm text-gray-600 mb-2">{strategy.summary.oneLiner}</p>
-              {strategy.advice.suggestedAmount > 0 && (
-                <div className="text-sm font-medium">
-                  <span className="text-gray-500">建议操作：</span>
-                  <span className={strategy.compositeScore >= 0 ? 'text-emerald-700' : 'text-red-700'}>{strategy.advice.suggestedAction}</span>
-                  <span className="text-gray-400 mx-1.5">|</span>
-                  <span className="text-gray-700">参考金额 {fmt(strategy.advice.suggestedAmount)}</span>
-                  <span className="text-gray-400 mx-1.5">|</span>
-                  <span className="text-gray-500">Kelly仓位 {strategy.advice.kellyPct}%</span>
-                </div>
-              )}
+        {researchError && (
+          <div className="px-5 py-3">
+            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
+              {researchError}
             </div>
+          </div>
+        )}
 
-            {/* 要点 */}
-            <div className="px-5 py-3 bg-gray-50/50">
-              <div className="space-y-1">
-                {strategy.summary.keyPoints.map((p, i) => (
-                  <p key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
-                    <span className="text-gray-400 shrink-0 mt-0.5">{'>'}</span>{p}
-                  </p>
-                ))}
-              </div>
-            </div>
+        {researchLoading && !research && (
+          <div className="flex items-center justify-center py-8 text-gray-400 text-sm">
+            <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+            正在获取基本面数据和行业新闻...
+          </div>
+        )}
 
-            {/* 技术指标面板 */}
-            <div className="px-5 py-4">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">技术指标</h4>
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">RSI(14)</div>
-                  <div className={`text-sm font-bold ${strategy.technical.rsi14 >= 70 ? 'text-red-600' : strategy.technical.rsi14 <= 30 ? 'text-green-600' : 'text-gray-900'}`}>
-                    {strategy.technical.rsi14.toFixed(1)}
-                  </div>
-                  <div className="text-[10px] text-gray-400">{strategy.technical.rsi14 >= 70 ? '超买' : strategy.technical.rsi14 <= 30 ? '超卖' : '中性'}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">MACD</div>
-                  <div className={`text-sm font-bold ${strategy.technical.macd.histogram >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    {strategy.technical.macd.histogram >= 0 ? '+' : ''}{(strategy.technical.macd.histogram * 10000).toFixed(1)}
-                  </div>
-                  <div className="text-[10px] text-gray-400">{strategy.technical.macd.dif > strategy.technical.macd.dea ? '金叉' : '死叉'}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">布林%B</div>
-                  <div className={`text-sm font-bold ${strategy.technical.bollingerBands.percentB >= 80 ? 'text-red-600' : strategy.technical.bollingerBands.percentB <= 20 ? 'text-green-600' : 'text-gray-900'}`}>
-                    {strategy.technical.bollingerBands.percentB.toFixed(0)}%
-                  </div>
-                  <div className="text-[10px] text-gray-400">{strategy.technical.bollingerBands.percentB >= 80 ? '高位' : strategy.technical.bollingerBands.percentB <= 20 ? '低位' : '中位'}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">趋势评分</div>
-                  <div className={`text-sm font-bold ${strategy.technical.trendScore >= 15 ? 'text-emerald-600' : strategy.technical.trendScore <= -15 ? 'text-red-600' : 'text-amber-600'}`}>
-                    {strategy.technical.trendScore > 0 ? '+' : ''}{strategy.technical.trendScore}
-                  </div>
-                  <div className="text-[10px] text-gray-400">{strategy.technical.trend === 'strong_up' ? '强多' : strategy.technical.trend === 'up' ? '偏多' : strategy.technical.trend === 'sideways' ? '震荡' : strategy.technical.trend === 'down' ? '偏空' : '强空'}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">支撑位</div>
-                  <div className="text-sm font-bold text-green-700">{strategy.technical.support.toFixed(4)}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">阻力位</div>
-                  <div className="text-sm font-bold text-red-700">{strategy.technical.resistance.toFixed(4)}</div>
-                </div>
-              </div>
-              <div className="mt-2.5 grid grid-cols-4 gap-2 text-xs text-gray-500">
-                <span>MA5 <strong className="text-gray-700">{strategy.technical.ma5.toFixed(4)}</strong></span>
-                <span>MA10 <strong className="text-gray-700">{strategy.technical.ma10.toFixed(4)}</strong></span>
-                <span>MA20 <strong className="text-gray-700">{strategy.technical.ma20.toFixed(4)}</strong></span>
-                <span>MA60 <strong className="text-gray-700">{strategy.technical.ma60.toFixed(4)}</strong></span>
-              </div>
-            </div>
-
-            {/* 风控指标 */}
-            <div className="px-5 py-4">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">风控指标</h4>
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">最大回撤</div>
-                  <div className="text-sm font-bold text-red-600">-{strategy.risk.maxDrawdown.toFixed(1)}%</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">当前回撤</div>
-                  <div className={`text-sm font-bold ${strategy.risk.currentDrawdown > 5 ? 'text-red-600' : 'text-gray-700'}`}>-{strategy.risk.currentDrawdown.toFixed(1)}%</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">年化波动率</div>
-                  <div className={`text-sm font-bold ${strategy.risk.volatility20d > 25 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.volatility20d.toFixed(1)}%</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">夏普比率</div>
-                  <div className={`text-sm font-bold ${strategy.risk.sharpeRatio >= 1 ? 'text-emerald-600' : strategy.risk.sharpeRatio < 0 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.sharpeRatio.toFixed(2)}</div>
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-gray-400">日胜率</div>
-                  <div className={`text-sm font-bold ${strategy.risk.winRate >= 55 ? 'text-emerald-600' : strategy.risk.winRate < 45 ? 'text-red-600' : 'text-gray-700'}`}>{strategy.risk.winRate.toFixed(0)}%</div>
-                </div>
-              </div>
-              <div className="mt-2 flex gap-4 text-xs text-gray-500">
-                <span>VaR(95%) <strong className="text-red-600">{strategy.risk.var95.toFixed(2)}%</strong></span>
-                <span>盈亏比 <strong className="text-gray-700">{strategy.risk.profitLossRatio.toFixed(2)}</strong></span>
-                <span>卡尔玛 <strong className="text-gray-700">{strategy.risk.calmarRatio.toFixed(2)}</strong></span>
-              </div>
-            </div>
-
-            {/* 市场环境 */}
-            {strategy.market.marketIndices.length > 0 && (
-              <div className="px-5 py-4">
-                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-                  市场环境
-                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${strategy.market.marketRegime === 'bull' ? 'bg-emerald-50 text-emerald-700' : strategy.market.marketRegime === 'bear' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
-                    {strategy.market.marketRegime === 'bull' ? '偏多' : strategy.market.marketRegime === 'bear' ? '偏空' : '震荡'}
-                  </span>
-                  <span className="ml-1.5 text-gray-400 font-normal">| 板块：{strategy.market.sector}</span>
-                </h4>
-                <div className="flex gap-3">
-                  {strategy.market.marketIndices.map((idx, i) => (
-                    <div key={i} className="flex-1 bg-gray-50 rounded-lg p-2 text-center">
-                      <div className="text-[10px] text-gray-400">{idx.name}</div>
-                      <div className={`text-sm font-bold ${idx.changePct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {idx.changePct >= 0 ? '+' : ''}{idx.changePct.toFixed(2)}%
+        {research && (
+          <div className="px-5 py-4 space-y-4">
+            {/* 基本面概要 */}
+            {research.fundamental && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">基本面</h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {research.fundamental.manager && (
+                    <div className="bg-gray-50 rounded-lg p-2.5">
+                      <div className="text-[10px] text-gray-400">基金经理</div>
+                      <div className="text-sm font-medium text-gray-900">{research.fundamental.manager}</div>
+                      <div className="text-[10px] text-gray-500">
+                        {research.fundamental.managerDays && `任职${research.fundamental.managerDays}`}
+                        {research.fundamental.managerReturn && ` · 回报${research.fundamental.managerReturn}`}
                       </div>
                     </div>
+                  )}
+                  {research.fundamental.scale && (
+                    <div className="bg-gray-50 rounded-lg p-2.5">
+                      <div className="text-[10px] text-gray-400">基金规模</div>
+                      <div className="text-sm font-medium text-gray-900">{research.fundamental.scale}</div>
+                    </div>
+                  )}
+                  {research.fundamental.rate && (
+                    <div className="bg-gray-50 rounded-lg p-2.5">
+                      <div className="text-[10px] text-gray-400">申购费率</div>
+                      <div className="text-sm font-medium text-gray-900">{research.fundamental.rate}</div>
+                    </div>
+                  )}
+                  {research.fundamental.holderStructure && (
+                    <div className="bg-gray-50 rounded-lg p-2.5">
+                      <div className="text-[10px] text-gray-400">持有人结构</div>
+                      <div className="text-[11px] font-medium text-gray-700">{research.fundamental.holderStructure}</div>
+                    </div>
+                  )}
+                </div>
+                {research.fundamental.performance && (
+                  <div className="mt-2 text-xs text-gray-600 bg-gray-50 rounded-lg p-2.5">
+                    <span className="text-gray-400">业绩：</span>{research.fundamental.performance}
+                  </div>
+                )}
+                {research.fundamental.assetAlloc && (
+                  <div className="mt-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg p-2.5">
+                    <span className="text-gray-400">资产配置：</span>{research.fundamental.assetAlloc}
+                  </div>
+                )}
+                {research.fundamental.topHoldings && (
+                  <div className="mt-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg p-2.5">
+                    <span className="text-gray-400">重仓：</span>{research.fundamental.topHoldings}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 行业新闻 */}
+            {research.news?.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  行业新闻 · {research.sectorKeyword}
+                </h4>
+                <div className="space-y-1.5">
+                  {research.news.map((n: any, i: number) => (
+                    <a key={i} href={n.url} target="_blank" rel="noopener noreferrer"
+                      className="flex items-start gap-2 p-2 rounded-lg hover:bg-gray-50 transition-colors group">
+                      <span className="shrink-0 w-5 h-5 rounded bg-cyan-100 text-cyan-700 text-[10px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-gray-800 group-hover:text-cyan-700 line-clamp-2 transition-colors">{n.title}</div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">{n.date} · {n.source}</div>
+                      </div>
+                    </a>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* 交易信号 */}
-            <div className="px-5 py-4">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">交易信号（{strategy.signals.length}条）</h4>
-              <div className="space-y-1.5">
-                {strategy.signals.sort((a, b) => Math.abs(b.strength) - Math.abs(a.strength)).map((s, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <span className={`mt-0.5 w-14 text-center px-1 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                      s.type === 'buy' ? 'bg-emerald-100 text-emerald-700' : s.type === 'sell' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
-                    }`}>{s.source}</span>
-                    <span className="text-xs text-gray-600 leading-relaxed">{s.reason}</span>
-                    <span className={`shrink-0 text-xs font-mono font-bold ${s.strength > 0 ? 'text-emerald-600' : s.strength < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                      {s.strength > 0 ? '+' : ''}{s.strength}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 金字塔加减仓位 */}
-            {strategy.advice.pyramidLevels.length > 0 && (
-              <div className="px-5 py-4">
-                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">金字塔加减仓参考</h4>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead><tr className="text-gray-400">
-                      <th className="text-left py-1.5 font-medium">目标净值</th>
-                      <th className="text-left py-1.5 font-medium">操作</th>
-                      <th className="text-right py-1.5 font-medium">金额</th>
-                      <th className="text-left py-1.5 pl-3 font-medium">说明</th>
-                    </tr></thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {strategy.advice.pyramidLevels.map((l, i) => (
-                        <tr key={i} className="hover:bg-gray-50">
-                          <td className="py-1.5 font-mono font-medium">{l.nav.toFixed(4)}</td>
-                          <td className={`py-1.5 font-medium ${l.action.includes('加') ? 'text-emerald-600' : 'text-red-600'}`}>{l.action}</td>
-                          <td className="py-1.5 text-right">{fmt(l.amount)}</td>
-                          <td className="py-1.5 pl-3 text-gray-500">{l.reason}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* 短线操作计划 */}
-            <div className="px-5 py-4">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">短线计划（本周）</h4>
-              <p className="text-xs text-gray-500 mb-3">{strategy.shortTermPlan.outlook}</p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead><tr className="text-gray-400">
-                    <th className="text-left py-1.5 font-medium">触发条件</th>
-                    <th className="text-left py-1.5 font-medium">操作</th>
-                    <th className="text-right py-1.5 font-medium">金额</th>
-                  </tr></thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {strategy.shortTermPlan.triggers.map((t, i) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="py-1.5 text-gray-700">{t.condition}</td>
-                        <td className={`py-1.5 font-medium ${t.action.includes('买') ? 'text-emerald-600' : 'text-red-600'}`}>{t.action}</td>
-                        <td className="py-1.5 text-right">{fmt(t.amount)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="flex gap-4 mt-2 text-xs text-gray-400">
-                <span>止损位 <strong className="text-red-600">{strategy.shortTermPlan.stopLossNav.toFixed(4)}</strong></span>
-                <span>止盈位 <strong className="text-green-600">{strategy.shortTermPlan.takeProfitNav.toFixed(4)}</strong></span>
-              </div>
-            </div>
-
-            {/* 长线定投计划 */}
-            <div className="px-5 py-4">
-              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">长线计划（{strategy.longTermPlan.horizonMonths}个月）</h4>
-              <p className="text-xs text-gray-500 mb-3">{strategy.longTermPlan.outlook}</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3">
-                <div className="bg-blue-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-blue-400">基础月定投</div>
-                  <div className="text-sm font-bold text-blue-700">{fmt(strategy.longTermPlan.monthlyBase)}</div>
-                </div>
-                <div className="bg-blue-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-blue-400">目标成本</div>
-                  <div className="text-sm font-bold text-blue-700">{strategy.longTermPlan.targetCostNav.toFixed(4)}</div>
-                </div>
-                <div className="bg-blue-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-blue-400">预期年化</div>
-                  <div className={`text-sm font-bold ${strategy.longTermPlan.targetGainPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{strategy.longTermPlan.targetGainPct >= 0 ? '+' : ''}{strategy.longTermPlan.targetGainPct}%</div>
-                </div>
-                <div className="bg-blue-50 rounded-lg p-2 text-center">
-                  <div className="text-[10px] text-blue-400">投资周期</div>
-                  <div className="text-sm font-bold text-blue-700">{strategy.longTermPlan.horizonMonths} 个月</div>
-                </div>
-              </div>
-              <h5 className="text-[10px] text-gray-400 mb-1.5">智能定投规则</h5>
-              <div className="space-y-1">
-                {strategy.longTermPlan.smartDCA.map((d, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-1.5">
-                    <span className="text-gray-600">{d.condition}</span>
-                    <span className="font-medium text-gray-900">{d.multiplier}x → {fmt(d.amount)}/月</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 亏损翻盈计划 */}
-            {strategy.recoveryPlan.isLosing && (
-              <div className="px-5 py-4">
-                <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
-                  亏损翻盈计划
-                  <span className="ml-2 text-red-600 font-bold">-{fmt(strategy.recoveryPlan.currentLoss)} ({strategy.recoveryPlan.currentLossPct}%)</span>
-                </h4>
-                <p className="text-xs text-gray-600 mb-3 leading-relaxed">{strategy.recoveryPlan.recommendation}</p>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead><tr className="text-gray-400 bg-gray-50">
-                      <th className="text-left px-2 py-2 font-medium rounded-l-lg">方案</th>
-                      <th className="text-right px-2 py-2 font-medium">补仓金额</th>
-                      <th className="text-right px-2 py-2 font-medium">新成本</th>
-                      <th className="text-right px-2 py-2 font-medium">回本涨幅</th>
-                      <th className="text-right px-2 py-2 font-medium rounded-r-lg">预估天数</th>
-                    </tr></thead>
-                    <tbody className="divide-y divide-gray-50">
-                      <tr className="text-gray-400">
-                        <td className="px-2 py-2">不补仓</td>
-                        <td className="px-2 py-2 text-right">-</td>
-                        <td className="px-2 py-2 text-right">{strategy.recoveryPlan.breakevenNav.toFixed(4)}</td>
-                        <td className="px-2 py-2 text-right text-red-600">+{strategy.position.costNav > 0 && strategy.fund.market_nav > 0 ? ((strategy.position.costNav - strategy.fund.market_nav) / strategy.fund.market_nav * 100).toFixed(1) : '?'}%</td>
-                        <td className="px-2 py-2 text-right">-</td>
-                      </tr>
-                      {strategy.recoveryPlan.scenarios.map((s, i) => (
-                        <tr key={i} className={`hover:bg-gray-50 ${i === 0 ? 'bg-emerald-50/30' : ''}`}>
-                          <td className="px-2 py-2 font-medium text-gray-700">{s.label}</td>
-                          <td className="px-2 py-2 text-right text-emerald-600 font-medium">{fmt(s.investAmount)}</td>
-                          <td className="px-2 py-2 text-right font-mono">{s.newCostNav.toFixed(4)}</td>
-                          <td className="px-2 py-2 text-right">
-                            <span className={s.breakevenChangePct <= 3 ? 'text-emerald-600 font-bold' : 'text-amber-600'}>+{s.breakevenChangePct.toFixed(1)}%</span>
-                          </td>
-                          <td className="px-2 py-2 text-right text-gray-500">~{s.estimatedDays}天</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            <div className="px-5 py-2.5 text-xs text-gray-400 bg-gray-50">
-              {new Date(strategy.timestamp).toLocaleString('zh-CN')} &middot; 60日数据 &middot; 本地量化引擎 &middot; 仅供参考，不构成投资建议
-            </div>
-          </div>
-        )}
-
-        {!strategy && !strategyLoading && (
-          <div className="px-5 py-8 text-center text-sm text-gray-400">
-            {fund.code ? '点击"开始分析"获取量化策略建议' : '需要设置基金代码才能获取净值趋势数据'}
-          </div>
-        )}
-      </div>
-
-      {/* AI Advice */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
-              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-gray-900">AI 操作建议</h3>
-              <p className="text-xs text-gray-400">基于持仓+净值趋势，AI 给出具体操作建议</p>
-            </div>
-          </div>
-          <button
-            onClick={fetchAdvice}
-            disabled={adviceLoading}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 disabled:opacity-50 transition-colors"
-          >
-            {adviceLoading ? (
-              <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                分析中...
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                {advice ? '重新分析' : '获取建议'}
-              </>
-            )}
-          </button>
-        </div>
-
-        {showAdvice && (
-          <div className="px-5 py-4">
-            {adviceLoading && !advice && (
-              <div className="flex items-center justify-center py-8 text-gray-400 text-sm">
-                <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                AI 正在分析持仓数据，请稍候...
-              </div>
-            )}
-            {adviceError && (
-              <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
-                {adviceError}
-              </div>
-            )}
-            {advice && (
-              <div>
-                <div className="prose prose-sm max-w-none text-gray-700 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-gray-900 [&_h3]:mt-4 [&_h3]:mb-2 [&_ul]:ml-4 [&_li]:mb-1 [&_strong]:text-gray-900">
-                  {advice.advice.split('\n').map((line, i) => {
-                    if (line.startsWith('### ')) {
-                      return <h3 key={i}>{line.replace('### ', '')}</h3>
-                    }
-                    if (line.startsWith('- ')) {
-                      return <li key={i} className="list-disc ml-4">{renderBold(line.slice(2))}</li>
-                    }
-                    if (line.startsWith('**') && line.endsWith('**')) {
-                      return <p key={i} className="font-semibold text-gray-900 mt-2">{line.replace(/\*\*/g, '')}</p>
-                    }
+            {/* AI 分析结论 */}
+            {research.analysis && (
+              <div className="border-t border-gray-100 pt-4">
+                <h4 className="text-xs font-semibold text-cyan-600 uppercase tracking-wide mb-2">AI 综合分析</h4>
+                <div className="prose prose-sm max-w-none text-gray-700 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-gray-900 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_ul]:ml-4 [&_li]:mb-1 [&_strong]:text-gray-900">
+                  {research.analysis.split('\n').map((line: string, i: number) => {
+                    if (line.startsWith('### ')) return <h3 key={i}>{line.replace('### ', '')}</h3>
+                    if (line.startsWith('- ')) return <li key={i} className="list-disc ml-4">{renderBold(line.slice(2))}</li>
                     if (line.trim() === '') return <br key={i} />
                     return <p key={i} className="mb-1">{renderBold(line)}</p>
                   })}
                 </div>
-                <div className="mt-4 pt-3 border-t border-gray-100 text-xs text-gray-400">
-                  生成时间：{new Date(advice.generated_at).toLocaleString('zh-CN')} &middot; 仅供参考，不构成投资建议
-                </div>
+                {research.generated_at && (
+                  <div className="mt-3 pt-2 border-t border-gray-100 text-[11px] text-gray-400">
+                    生成时间：{new Date(research.generated_at).toLocaleString('zh-CN')} · 仅供参考
+                  </div>
+                )}
+              </div>
+            )}
+
+            {research.error && !research.analysis && (
+              <div className="text-sm text-amber-600 bg-amber-50 rounded-lg p-3">
+                {research.error}
               </div>
             )}
           </div>

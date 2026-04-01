@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
+import { fetchFundamental, fetchSectorNews, inferSectorKeyword } from '../datasource';
 
 const router = Router();
 
@@ -60,6 +61,120 @@ async function callAI(prompt: string): Promise<string> {
 
   return JSON.stringify(data);
 }
+
+router.get('/funds/:id/research', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id) as any;
+  if (!fund) { res.status(404).json({ error: '基金不存在' }); return; }
+
+  // 持仓数据
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+      COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as cost_basis
+    FROM transactions WHERE fund_id = ?
+  `).get(id) as any;
+
+  const holdingShares = row.holding_shares;
+  const totalCost = row.cost_basis;
+  const costNav = holdingShares > 0 ? totalCost / holdingShares : 0;
+  const mNav = fund.market_nav || 0;
+  const gain = mNav > 0 ? (mNav - costNav) / costNav * 100 : 0;
+
+  // 获取基本面数据
+  let fundamental = null;
+  if (fund.code) {
+    fundamental = await fetchFundamental(fund.code);
+  }
+
+  const sectorKeyword = inferSectorKeyword(fund.name);
+
+  // 获取行业新闻
+  const news = await fetchSectorNews(sectorKeyword, 8);
+
+  // 组装原始数据（不管有没有AI，都返回）
+  const rawData = {
+    fundamental,
+    news,
+    sectorKeyword,
+    position: {
+      holdingShares: Math.round(holdingShares * 100) / 100,
+      costNav: Math.round(costNav * 10000) / 10000,
+      marketNav: mNav,
+      gainPct: Math.round(gain * 100) / 100,
+    },
+  };
+
+  // 如果没有AI Key，只返回原始数据
+  if (!AI_KEY) {
+    res.json({ ...rawData, analysis: null, error: '未配置AI，仅返回原始数据' });
+    return;
+  }
+
+  // AI 综合分析
+  const newsText = news.length > 0
+    ? news.map((n, i) => `${i + 1}. [${n.date}] ${n.title}（${n.source}）`).join('\n')
+    : '暂无相关新闻';
+
+  const fundInfo = fundamental
+    ? `基金经理：${fundamental.manager}（任职${fundamental.managerDays}，任期回报${fundamental.managerReturn}）
+费率：${fundamental.rate}
+规模：${fundamental.scale}
+资产配置：${fundamental.assetAlloc}
+持有人结构：${fundamental.holderStructure}
+业绩评价：${fundamental.performance}
+重仓持股：${fundamental.topHoldings}`
+    : '无基金代码，未获取基本面数据';
+
+  const prompt = `你是一位专业的中国基金投资分析师。请基于以下数据，给出消息面和基本面的综合分析。
+
+## 基金信息
+- 名称：${fund.name}${fund.code ? `（${fund.code}）` : ''}
+- 当前净值：${mNav > 0 ? mNav.toFixed(4) : '未知'}
+- 成本净值：${costNav.toFixed(4)}
+- 浮动盈亏：${gain.toFixed(2)}%
+- 持仓份额：${holdingShares.toFixed(2)}份
+- 板块：${sectorKeyword}
+
+## 基本面数据
+${fundInfo}
+
+## 近期行业新闻（${sectorKeyword}相关）
+${newsText}
+
+请按以下结构分析（中文，简明扼要，每部分2-3句话）：
+
+### 基本面评估
+- 基金经理能力和任期稳定性
+- 基金规模是否合适（太大影响灵活性，太小有清盘风险）
+- 费率和持有人结构分析
+- 资产配置和重仓股评价
+
+### 消息面分析
+- 当前行业/板块的核心消息和事件
+- 这些消息对基金净值的短期影响（利多/利空/中性）
+- 需要关注的风险点
+
+### 综合研判
+- 基本面+消息面结合，对该基金的中短期展望
+- 对我持仓的具体建议（加仓/持有/减仓），结合当前${gain >= 0 ? '盈利' : '亏损'}状态
+
+要求：
+1. 结论明确，不要模棱两可
+2. 消息面要结合具体新闻标题引用
+3. 如果数据不足如实说明`;
+
+  try {
+    const analysis = await callAI(prompt);
+    res.json({ ...rawData, analysis, generated_at: new Date().toISOString() });
+  } catch (err: any) {
+    res.json({ ...rawData, analysis: null, error: `AI分析失败: ${err.message}` });
+  }
+});
 
 router.get('/funds/:id/advice', async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -162,7 +277,7 @@ ${navList.slice(-10).map((n: any) => `  ${n.date}: ${n.nav.toFixed(4)}${n.change
 - 总成本：¥${totalCost.toFixed(2)}
 - 当前市值：¥${marketValue.toFixed(2)}
 - 浮动盈亏：¥${gain.toFixed(2)}（${gainPct.toFixed(2)}%）
-- 止盈线：${fund.stop_profit_pct || 5}% | 止损线：${fund.stop_loss_pct || 5}%
+- 止盈线：${fund.stop_profit_pct || 20}% | 止损线：${fund.stop_loss_pct || 15}%
 
 ## 净值趋势
 ${navTrendText}
