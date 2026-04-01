@@ -382,6 +382,14 @@ export function getRedeemFeeRate(levels: RedeemFeeLevel[], holdDays: number): nu
 // 资金流向数据
 // ============================================================
 
+export interface HoldingFlow {
+  code: string;
+  name: string;
+  pctOfNav: number;           // 占净值比例%
+  mainNetInflow: number;      // 主力净流入（亿元）
+  mainPct: number;            // 主力净占比%
+}
+
 export interface CapitalFlowData {
   // 大盘主力资金（近5日）
   market: {
@@ -403,21 +411,31 @@ export interface CapitalFlowData {
     mainPct: number;          // 主力净占比%
     superLargeIn: number;     // 超大单净流入（亿元）
   } | null;
+  // 重仓股资金流（每只基金不同）
+  holdings: HoldingFlow[];
+  holdingsFlowScore: number;  // 重仓股加权资金评分 -100~+100
   // 汇总评分 -100~+100
   flowScore: number;
   flowLabel: string;
+  flowDetail: string;         // 资金流向说明文字
 }
 
-/** 获取大盘主力资金近N日流向 */
+// === 市场级数据缓存（10分钟TTL）===
+let _marketCache: { data: CapitalFlowData['market']; ts: number } | null = null;
+let _northboundCache: { data: CapitalFlowData['northbound']; ts: number } | null = null;
+let _sectorCache: { data: Map<string, CapitalFlowData['sector']>; ts: number } | null = null;
+const CACHE_TTL = 10 * 60 * 1000; // 10分钟
+
+/** 获取大盘主力资金近N日流向（带缓存） */
 async function fetchMarketMainFlow(days: number = 5): Promise<CapitalFlowData['market']> {
+  if (_marketCache && Date.now() - _marketCache.ts < CACHE_TTL) return _marketCache.data;
   try {
     const url = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.000001&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&lmt=${days}&klt=101&ut=b2884a393a59ad64002292a3e90d46a5`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json() as any;
     const klines = data?.data?.klines || [];
-    // 格式: "日期,主力净流入,超大单,大单,中单,小单,主力净占比,...
-    return klines.map((line: string) => {
+    const result = klines.map((line: string) => {
       const parts = line.split(',');
       return {
         date: parts[0],
@@ -427,17 +445,19 @@ async function fetchMarketMainFlow(days: number = 5): Promise<CapitalFlowData['m
         mainPct: parseFloat(parts[6]) || 0,
       };
     });
+    _marketCache = { data: result, ts: Date.now() };
+    return result;
   } catch { return []; }
 }
 
-/** 获取北向资金近N日净买入 */
+/** 获取北向资金近N日净买入（带缓存） */
 async function fetchNorthboundFlow(days: number = 5): Promise<CapitalFlowData['northbound']> {
+  if (_northboundCache && Date.now() - _northboundCache.ts < CACHE_TTL) return _northboundCache.data;
   try {
     const url = `https://push2his.eastmoney.com/api/qt/kamt.kline/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56&klt=101&lmt=${days}&ut=b2884a393a59ad64002292a3e90d46a5`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json() as any;
-    // hk2sh[i] = "日期,买入,卖出,净买入"; hk2sz[i] = 同理
     const hk2sh = data?.data?.hk2sh || [];
     const hk2sz = data?.data?.hk2sz || [];
     const result: CapitalFlowData['northbound'] = [];
@@ -445,11 +465,11 @@ async function fetchNorthboundFlow(days: number = 5): Promise<CapitalFlowData['n
       const shParts = (hk2sh[i] || '').split(',');
       const szParts = (hk2sz[i] || '').split(',');
       const date = shParts[0] || szParts[0] || '';
-      // 净买入 = 买入 - 卖出（单位万元，转亿）
       const shNet = (parseFloat(shParts[1]) || 0) - (parseFloat(shParts[2]) || 0);
       const szNet = (parseFloat(szParts[1]) || 0) - (parseFloat(szParts[2]) || 0);
-      result.push({ date, netBuy: Math.round((shNet + szNet) / 10000) / 10000 }); // 万元→亿元
+      result.push({ date, netBuy: Math.round((shNet + szNet) / 10000) / 10000 });
     }
+    _northboundCache = { data: result, ts: Date.now() };
     return result;
   } catch { return []; }
 }
@@ -472,95 +492,174 @@ const sectorFlowMapping: [RegExp, string][] = [
   [/煤炭|能源/, '煤炭'],
 ];
 
-/** 获取板块资金流（当日） */
+/** 获取板块资金流（当日，带缓存） */
 async function fetchSectorFlow(fundName: string): Promise<CapitalFlowData['sector']> {
-  // 根据基金名推断板块
   let targetSector = '';
   for (const [re, name] of sectorFlowMapping) {
     if (re.test(fundName)) { targetSector = name; break; }
   }
   if (!targetSector) return null;
 
+  // 检查缓存
+  if (_sectorCache && Date.now() - _sectorCache.ts < CACHE_TTL) {
+    return _sectorCache.data.get(targetSector) ?? null;
+  }
+
   try {
-    // 获取全部板块资金流（按主力净流入排序）
     const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po=1&np=1&fltt=2&invt=2&fid=f62&fs=m:90+t:2&fields=f12,f14,f62,f184,f66,f69,f72,f75,f78,f81&ut=b2884a393a59ad64002292a3e90d46a5`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json() as any;
     const list = data?.data?.diff || [];
 
-    // 模糊匹配板块名
-    const match = list.find((item: any) => item.f14 && item.f14.includes(targetSector));
-    if (!match) return null;
+    // 构建缓存
+    const sectorMap = new Map<string, CapitalFlowData['sector']>();
+    for (const item of list) {
+      const name = item.f14 || '';
+      sectorMap.set(name, {
+        name,
+        mainNetInflow: Math.round((item.f62 || 0) / 1e8 * 100) / 100,
+        mainPct: item.f184 || 0,
+        superLargeIn: Math.round((item.f66 || 0) / 1e8 * 100) / 100,
+      });
+    }
+    _sectorCache = { data: sectorMap, ts: Date.now() };
 
-    return {
-      name: match.f14,
-      mainNetInflow: Math.round((match.f62 || 0) / 1e8 * 100) / 100,  // 元→亿元
-      mainPct: match.f184 || 0,
-      superLargeIn: Math.round((match.f66 || 0) / 1e8 * 100) / 100,
-    };
+    // 模糊匹配
+    for (const [, sector] of sectorMap) {
+      if (sector && sector.name.includes(targetSector)) return sector;
+    }
+    return null;
   } catch { return null; }
 }
 
-/** 综合获取资金流向数据并评分 */
-export async function fetchCapitalFlow(fundName: string): Promise<CapitalFlowData> {
-  const [market, northbound, sector] = await Promise.all([
+/** 批量获取重仓股当日资金流向（每只基金不同！） */
+async function fetchHoldingsFlow(holdings: FundHolding[]): Promise<HoldingFlow[]> {
+  if (!holdings || holdings.length === 0) return [];
+  const top = holdings.slice(0, 5); // 取前5大重仓股
+
+  // 构建 secids：沪市(6开头)=1.xxx，深市(0/3开头)=0.xxx
+  const secids = top.map(h => {
+    const market = h.code.startsWith('6') ? '1' : '0';
+    return `${market}.${h.code}`;
+  }).join(',');
+
+  try {
+    const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f14,f62,f184,f66,f69,f72,f75&secids=${secids}&ut=b2884a393a59ad64002292a3e90d46a5`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json() as any;
+    const list = data?.data?.diff || [];
+
+    return list.map((item: any) => {
+      const code = item.f12 || '';
+      const holding = top.find(h => h.code === code);
+      return {
+        code,
+        name: item.f14 || '',
+        pctOfNav: holding?.pctOfNav || 0,
+        mainNetInflow: Math.round((item.f62 || 0) / 1e8 * 100) / 100,
+        mainPct: item.f184 || 0,
+      };
+    });
+  } catch { return []; }
+}
+
+/** 综合获取资金流向数据并评分（每只基金的重仓股不同→评分不同） */
+export async function fetchCapitalFlow(fundName: string, holdings?: FundHolding[]): Promise<CapitalFlowData> {
+  const [market, northbound, sector, holdingsFlow] = await Promise.all([
     fetchMarketMainFlow(5),
     fetchNorthboundFlow(5),
     fetchSectorFlow(fundName),
+    fetchHoldingsFlow(holdings || []),
   ]);
 
-  // 资金流向评分
-  let flowScore = 0;
-
-  // 1. 大盘主力资金趋势（近5日）
-  if (market.length >= 2) {
-    const recentInflows = market.map(m => m.mainNetInflow);
-    const avgInflow = recentInflows.reduce((a, b) => a + b, 0) / recentInflows.length;
-    const latestInflow = recentInflows[recentInflows.length - 1] || 0;
-    // 最新一天的主力净流入（亿元级别）
-    const latestBillion = latestInflow / 1e8;
-    if (latestBillion > 50) flowScore += 25;       // 大幅流入 >50亿
-    else if (latestBillion > 10) flowScore += 15;   // 中度流入
-    else if (latestBillion > 0) flowScore += 5;
-    else if (latestBillion < -50) flowScore -= 25;  // 大幅流出
-    else if (latestBillion < -10) flowScore -= 15;
-    else if (latestBillion < 0) flowScore -= 5;
-
-    // 连续流入/流出趋势
-    const inflowDays = recentInflows.filter(v => v > 0).length;
-    if (inflowDays >= 4) flowScore += 10;           // 连续流入
-    else if (inflowDays <= 1) flowScore -= 10;      // 连续流出
-
-    // 加速/减速
-    const avgBillion = avgInflow / 1e8;
-    if (latestBillion > avgBillion && latestBillion > 0) flowScore += 5; // 流入加速
-    if (latestBillion < avgBillion && latestBillion < 0) flowScore -= 5; // 流出加速
+  // === 重仓股加权资金评分（每只基金不同的关键！）===
+  let holdingsFlowScore = 0;
+  if (holdingsFlow.length > 0) {
+    const totalWeight = holdingsFlow.reduce((s, h) => s + h.pctOfNav, 0) || 1;
+    for (const h of holdingsFlow) {
+      const weight = h.pctOfNav / totalWeight;
+      // 单股主力净流入的影响（按持仓比例加权）
+      if (h.mainNetInflow > 2) holdingsFlowScore += 20 * weight;
+      else if (h.mainNetInflow > 0.5) holdingsFlowScore += 12 * weight;
+      else if (h.mainNetInflow > 0) holdingsFlowScore += 5 * weight;
+      else if (h.mainNetInflow < -2) holdingsFlowScore -= 20 * weight;
+      else if (h.mainNetInflow < -0.5) holdingsFlowScore -= 12 * weight;
+      else if (h.mainNetInflow < 0) holdingsFlowScore -= 5 * weight;
+      // 主力净占比的影响
+      if (h.mainPct > 5) holdingsFlowScore += 10 * weight;
+      else if (h.mainPct < -5) holdingsFlowScore -= 10 * weight;
+    }
+    holdingsFlowScore = Math.round(Math.max(-100, Math.min(100, holdingsFlowScore * 3))); // 放大
   }
 
-  // 2. 北向资金
+  // === 综合评分：重仓股40% + 板块30% + 大盘20% + 北向10% ===
+  let marketScore = 0;
+  if (market.length >= 2) {
+    const latestBillion = (market[market.length - 1]?.mainNetInflow || 0) / 1e8;
+    if (latestBillion > 50) marketScore = 30;
+    else if (latestBillion > 10) marketScore = 15;
+    else if (latestBillion > 0) marketScore = 5;
+    else if (latestBillion < -50) marketScore = -30;
+    else if (latestBillion < -10) marketScore = -15;
+    else if (latestBillion < 0) marketScore = -5;
+    // 连续趋势
+    const inflowDays = market.filter(v => v.mainNetInflow > 0).length;
+    if (inflowDays >= 4) marketScore += 10;
+    else if (inflowDays <= 1) marketScore -= 10;
+  }
+
+  let nbScore = 0;
   if (northbound.length >= 2) {
     const latestNB = northbound[northbound.length - 1]?.netBuy || 0;
-    if (latestNB > 50) flowScore += 15;             // 北向大幅买入 >50亿
-    else if (latestNB > 10) flowScore += 8;
-    else if (latestNB < -50) flowScore -= 15;
-    else if (latestNB < -10) flowScore -= 8;
-
-    // 北向连续方向
-    const nbDays = northbound.filter(n => n.netBuy > 0).length;
-    if (nbDays >= 4) flowScore += 8;
-    else if (nbDays <= 1) flowScore -= 8;
+    if (latestNB > 50) nbScore = 20;
+    else if (latestNB > 10) nbScore = 10;
+    else if (latestNB < -50) nbScore = -20;
+    else if (latestNB < -10) nbScore = -10;
   }
 
-  // 3. 板块资金流
+  let sectorScore = 0;
   if (sector) {
-    if (sector.mainNetInflow > 10) flowScore += 15; // 板块大幅流入
-    else if (sector.mainNetInflow > 2) flowScore += 8;
-    else if (sector.mainNetInflow < -10) flowScore -= 15;
-    else if (sector.mainNetInflow < -2) flowScore -= 8;
+    if (sector.mainNetInflow > 10) sectorScore = 30;
+    else if (sector.mainNetInflow > 2) sectorScore = 15;
+    else if (sector.mainNetInflow > 0) sectorScore = 5;
+    else if (sector.mainNetInflow < -10) sectorScore = -30;
+    else if (sector.mainNetInflow < -2) sectorScore = -15;
+    else if (sector.mainNetInflow < 0) sectorScore = -5;
   }
 
-  flowScore = Math.max(-100, Math.min(100, flowScore));
+  // 加权：重仓股权重最高（因为最直接影响基金净值）
+  const hasHoldings = holdingsFlow.length > 0;
+  const flowScore = Math.max(-100, Math.min(100, Math.round(
+    hasHoldings
+      ? holdingsFlowScore * 0.4 + sectorScore * 0.3 + marketScore * 0.2 + nbScore * 0.1
+      : sectorScore * 0.45 + marketScore * 0.35 + nbScore * 0.2   // 无重仓股数据时
+  )));
+
+  // === 生成说明文字 ===
+  const detailParts: string[] = [];
+  if (holdingsFlow.length > 0) {
+    const inflowStocks = holdingsFlow.filter(h => h.mainNetInflow > 0).sort((a, b) => b.mainNetInflow - a.mainNetInflow);
+    const outflowStocks = holdingsFlow.filter(h => h.mainNetInflow < 0).sort((a, b) => a.mainNetInflow - b.mainNetInflow);
+    if (inflowStocks.length > 0) {
+      detailParts.push(`重仓流入：${inflowStocks.slice(0, 3).map(h => `${h.name}+${h.mainNetInflow.toFixed(1)}亿`).join('、')}`);
+    }
+    if (outflowStocks.length > 0) {
+      detailParts.push(`重仓流出：${outflowStocks.slice(0, 3).map(h => `${h.name}${h.mainNetInflow.toFixed(1)}亿`).join('、')}`);
+    }
+  }
+  if (sector) {
+    detailParts.push(`${sector.name}板块${sector.mainNetInflow >= 0 ? '+' : ''}${sector.mainNetInflow.toFixed(1)}亿`);
+  }
+  if (market.length > 0) {
+    const latestB = (market[market.length - 1]?.mainNetInflow || 0) / 1e8;
+    detailParts.push(`大盘主力${latestB >= 0 ? '+' : ''}${latestB.toFixed(0)}亿`);
+  }
+  if (northbound.length > 0) {
+    const nb = northbound[northbound.length - 1]?.netBuy || 0;
+    detailParts.push(`北向${nb >= 0 ? '+' : ''}${nb.toFixed(1)}亿`);
+  }
 
   const flowLabel = flowScore >= 30 ? '资金大幅流入'
     : flowScore >= 10 ? '资金温和流入'
@@ -568,7 +667,12 @@ export async function fetchCapitalFlow(fundName: string): Promise<CapitalFlowDat
     : flowScore <= -10 ? '资金温和流出'
     : '资金中性';
 
-  return { market, northbound, sector, flowScore, flowLabel };
+  return {
+    market, northbound, sector,
+    holdings: holdingsFlow, holdingsFlowScore,
+    flowScore, flowLabel,
+    flowDetail: detailParts.join('；'),
+  };
 }
 
 // ============================================================
