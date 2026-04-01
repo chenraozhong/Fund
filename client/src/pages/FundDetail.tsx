@@ -48,7 +48,7 @@ export default function FundDetail() {
   const fundId = Number(id)
 
   const [data, setData] = useState<FundDetailType | null>(null)
-  const [expandedAssets, setExpandedAssets] = useState<Set<string>>(new Set())
+  const [expandedAssets] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [merging, setMerging] = useState(false)
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -63,7 +63,7 @@ export default function FundDetail() {
   const [adviceError, setAdviceError] = useState('')
   const [showAdvice, setShowAdvice] = useState(false)
   const [editingStrategy, setEditingStrategy] = useState(false)
-  const [strategyForm, setStrategyForm] = useState({ stop_profit_pct: 5, stop_loss_pct: 5, market_nav: 0 })
+  const [strategyForm, setStrategyForm] = useState({ stop_profit_pct: 5, stop_loss_pct: 5, market_nav: 0, base_position_pct: 30 })
   const [splitTx, setSplitTx] = useState<Transaction | null>(null)
   const [splitShares, setSplitShares] = useState<number>(0)
   const [splitting, setSplitting] = useState(false)
@@ -80,15 +80,39 @@ export default function FundDetail() {
   const [strategy, setStrategy] = useState<StrategyResult | null>(null)
   const [strategyLoading, setStrategyLoading] = useState(false)
   const [strategyError, setStrategyError] = useState('')
+  const [quickNav, setQuickNav] = useState('')
+  const [quickLoading, setQuickLoading] = useState(false)
+  const [swingResult, setSwingResult] = useState<any>(null)
+  const [editingBase, setEditingBase] = useState(false)
+  const [baseForm, setBaseForm] = useState(30)
 
   const load = () => {
     api.getFundDetail(fundId).then(d => {
       setData(d)
       setForm(f => ({ ...f, fund_id: fundId }))
+      // 自动获取实时估值并填入快捷净值
+      if (d.fund.code) {
+        api.getLatestNav(d.fund.code).then(nav => {
+          if (nav.estimated_nav && nav.estimated_nav > 0) {
+            setQuickNav(nav.estimated_nav.toFixed(4))
+          }
+        }).catch(() => {})
+      }
     })
     api.getTrades(fundId).then(setTrades)
   }
   useEffect(() => { load() }, [fundId])
+
+  const fetchQuickAdvice = async () => {
+    const nav = parseFloat(quickNav)
+    if (!nav || nav <= 0) return
+    setQuickLoading(true)
+    try {
+      const swing = await api.getSwingAdvice(fundId, nav)
+      setSwingResult(swing)
+    } catch { /* ignore */ }
+    finally { setQuickLoading(false) }
+  }
 
   const fetchStrategy = async () => {
     setStrategyLoading(true)
@@ -426,6 +450,7 @@ export default function FundDetail() {
       stop_profit_pct: strategyForm.stop_profit_pct,
       stop_loss_pct: strategyForm.stop_loss_pct,
       market_nav: strategyForm.market_nav || undefined,
+      base_position_pct: strategyForm.base_position_pct,
     })
     setEditingStrategy(false)
     load()
@@ -523,6 +548,296 @@ export default function FundDetail() {
         </div>
       </div>
 
+      {/* 实时净值快速决策 */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+        <div className="flex items-center gap-2.5 mb-3">
+          <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+            <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">实时决策</h3>
+            <p className="text-xs text-gray-400">输入盘中实时净值，即时给出买卖建议</p>
+          </div>
+        </div>
+        <div className="flex gap-2 items-end">
+          <div className="flex-1">
+            <div className="relative">
+              <span className="absolute left-3 top-2 text-gray-400 text-sm">¥</span>
+              <input
+                type="number" step="0.0001" value={quickNav}
+                onChange={e => setQuickNav(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') fetchQuickAdvice() }}
+                placeholder={mNav > 0 ? `当前净值 ${mNav.toFixed(4)}` : '输入实时净值'}
+                className="w-full border border-gray-300 rounded-lg pl-7 pr-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+              />
+            </div>
+          </div>
+          <button onClick={fetchQuickAdvice} disabled={quickLoading || !quickNav}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm font-medium transition-colors">
+            {quickLoading ? '分析中...' : '分析'}
+          </button>
+        </div>
+
+        {swingResult && (
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            {/* 净值对比 */}
+            <div className="text-xs text-gray-500 mb-3">
+              实时净值 <strong className="text-gray-900">{fmtNav(swingResult.nav)}</strong>
+              {mNav > 0 && (
+                <> &middot; vs 收盘 {fmtNav(mNav)}
+                  <span className={`ml-1 font-medium ${swingResult.nav >= mNav ? 'text-red-600' : 'text-green-600'}`}>
+                    ({((swingResult.nav - mNav) / mNav * 100) >= 0 ? '+' : ''}{((swingResult.nav - mNav) / mNav * 100).toFixed(2)}%)
+                  </span>
+                </>
+              )}
+              &middot; 成本 {fmtNav(swingResult.costNav)}
+              <span className={`ml-1 font-medium ${swingResult.nav >= swingResult.costNav ? 'text-red-600' : 'text-green-600'}`}>
+                ({((swingResult.nav - swingResult.costNav) / swingResult.costNav * 100) >= 0 ? '+' : ''}{((swingResult.nav - swingResult.costNav) / swingResult.costNav * 100).toFixed(2)}%)
+              </span>
+            </div>
+
+            {/* 底仓保护模块 */}
+            {swingResult.basePosition && (() => {
+              const bp = swingResult.basePosition
+              const baseValue = bp.shares * swingResult.nav
+              const sellableValue = bp.maxSellable * swingResult.nav
+              // 编辑态的实时预览
+              const previewShares = editingBase ? Math.round(swingResult.holdingShares * baseForm / 100 * 10000) / 10000 : bp.shares
+              const previewValue = previewShares * swingResult.nav
+              const previewSellable = Math.round((swingResult.holdingShares - previewShares) * 10000) / 10000
+              const previewSellableValue = previewSellable * swingResult.nav
+              return (
+                <div className="mb-3 bg-amber-50 rounded-lg p-3 border border-amber-200/60">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                      底仓保护
+                    </div>
+                    {!editingBase ? (
+                      <button
+                        onClick={() => { setEditingBase(true); setBaseForm(bp.pct) }}
+                        className="text-[11px] text-amber-600 hover:text-amber-800 font-medium"
+                      >调整</button>
+                    ) : (
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={async () => {
+                            await api.updateFund(fundId, { base_position_pct: baseForm })
+                            setEditingBase(false)
+                            load()
+                            // 重新获取波段建议
+                            const nav = parseFloat(quickNav)
+                            if (nav > 0) {
+                              const swing = await api.getSwingAdvice(fundId, nav)
+                              setSwingResult(swing)
+                            }
+                          }}
+                          className="px-2 py-0.5 text-[11px] text-white bg-amber-600 rounded hover:bg-amber-700 font-medium"
+                        >保存</button>
+                        <button
+                          onClick={() => setEditingBase(false)}
+                          className="px-2 py-0.5 text-[11px] text-amber-600 hover:text-amber-800 font-medium"
+                        >取消</button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 编辑态：滑块 + 快捷按钮 */}
+                  {editingBase && (
+                    <div className="mb-2.5 space-y-2">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range" min="0" max="100" step="5" value={baseForm}
+                          onChange={e => setBaseForm(Number(e.target.value))}
+                          className="flex-1 h-2 accent-amber-500"
+                        />
+                        <span className="text-sm font-bold text-amber-900 w-12 text-right">{baseForm}%</span>
+                      </div>
+                      <div className="flex gap-1.5">
+                        {[0, 20, 30, 50, 70].map(v => (
+                          <button key={v} onClick={() => setBaseForm(v)}
+                            className={`flex-1 py-1 rounded text-[11px] font-medium transition-colors ${baseForm === v ? 'bg-amber-500 text-white' : 'bg-white/60 text-amber-700 hover:bg-white'}`}
+                          >{v}%</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-4 gap-2 text-center">
+                    <div className="bg-white/60 rounded-md px-2 py-1.5">
+                      <div className="text-[10px] text-amber-600">底仓锁定</div>
+                      <div className="text-sm font-bold text-amber-900">{editingBase ? fmtNum(previewShares, 2) : bp.shares}<span className="text-[10px] font-normal">份</span></div>
+                      <div className="text-[10px] text-amber-600">{fmt(editingBase ? previewValue : baseValue)}</div>
+                    </div>
+                    <div className="bg-white/60 rounded-md px-2 py-1.5">
+                      <div className="text-[10px] text-amber-600">活仓可操作</div>
+                      <div className="text-sm font-bold text-amber-900">{editingBase ? fmtNum(previewSellable, 2) : bp.maxSellable}<span className="text-[10px] font-normal">份</span></div>
+                      <div className="text-[10px] text-amber-600">{fmt(editingBase ? previewSellableValue : sellableValue)}</div>
+                    </div>
+                    <div className="bg-white/60 rounded-md px-2 py-1.5">
+                      <div className="text-[10px] text-amber-600">底仓成本</div>
+                      <div className="text-sm font-bold text-amber-900">{bp.baseCostNav ? bp.baseCostNav.toFixed(4) : '-'}</div>
+                      <div className="text-[10px] text-amber-600">占比 {editingBase ? baseForm : bp.pct}%</div>
+                    </div>
+                    <div className="bg-white/60 rounded-md px-2 py-1.5">
+                      <div className="text-[10px] text-amber-600">执行后成本</div>
+                      <div className={`text-sm font-bold ${bp.baseCostDrop > 0 ? 'text-emerald-700' : 'text-amber-900'}`}>{bp.newBaseCostNav ? bp.newBaseCostNav.toFixed(4) : '-'}</div>
+                      {bp.baseCostDrop > 0 && <div className="text-[10px] text-emerald-600 font-medium">降 {bp.baseCostDrop.toFixed(4)}</div>}
+                      {bp.baseCostDrop <= 0 && <div className="text-[10px] text-gray-400">无变化</div>}
+                    </div>
+                  </div>
+                  {/* 底仓进度条 */}
+                  <div className="mt-2 h-2 bg-amber-200/50 rounded-full overflow-hidden flex">
+                    <div className="h-full bg-amber-500 rounded-l-full" style={{ width: `${editingBase ? baseForm : bp.pct}%` }} />
+                    <div className="h-full bg-emerald-400" style={{ width: `${100 - (editingBase ? baseForm : bp.pct)}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-amber-500 mt-0.5">
+                    <span>底仓 {editingBase ? baseForm : bp.pct}%</span>
+                    <span>活仓 {100 - (editingBase ? baseForm : bp.pct)}%</span>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {swingResult.suggestions.length > 0 ? (
+              <>
+                <h4 className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-2">
+                  活仓波段操作（{swingResult.suggestions.length}笔，利润补贴底仓降成本）
+                </h4>
+                <div className="space-y-2">
+                  {swingResult.suggestions.map((s: any, i: number) => {
+                    const opPct = s.shares > 0 ? Math.round(s.opShares / s.shares * 100) : 0
+                    const isSell = s.direction === 'sell'
+                    return (
+                      <div key={i} className={`rounded-lg p-2.5 ${isSell ? 'bg-red-50/50' : 'bg-emerald-50/50'}`}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs text-gray-500">
+                            {s.date} {isSell ? '买入' : '卖出'} {s.shares}份 @ {s.refPrice.toFixed(4)}
+                          </span>
+                          <span className={`text-xs font-bold ${s.profit > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                            预期利润 +{fmt(s.profit)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <div className="flex-1 h-5 bg-gray-200 rounded-full overflow-hidden flex">
+                            <div className={`h-full flex items-center justify-center text-[10px] text-white font-bold ${isSell ? 'bg-red-400' : 'bg-emerald-400'}`}
+                              style={{ width: `${opPct}%` }}>
+                              {opPct > 15 && `${isSell ? '卖' : '买'}${opPct}%`}
+                            </div>
+                            {s.keepShares > 0 && (
+                              <div className="h-full bg-gray-300 flex items-center justify-center text-[10px] text-white font-bold"
+                                style={{ width: `${100 - opPct}%` }}>
+                                {(100 - opPct) > 15 && `${isSell ? '留' : '不买'}${100 - opPct}%`}
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-xs font-mono text-gray-700 shrink-0">
+                            {isSell ? `卖${s.opShares}/留${s.keepShares}` : `买${s.opShares}份`}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-500">{s.reason}</p>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="mt-2 bg-indigo-50 rounded-lg p-2.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-indigo-700 font-medium">全部执行后</span>
+                    <span className="text-emerald-700 font-bold">总利润 {fmt(swingResult.impact.totalProfit)}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-indigo-600">
+                    {swingResult.impact.totalSellShares > 0 && <span>卖出 {swingResult.impact.totalSellShares}份（利润{fmt(swingResult.impact.sellProfit)}）</span>}
+                    {swingResult.impact.totalBuyShares > 0 && <span>买回 {swingResult.impact.totalBuyShares}份（利润{fmt(swingResult.impact.buyProfit)}）</span>}
+                    <span>持仓 {swingResult.impact.newHoldingShares}份</span>
+                    <span>整体成本 {swingResult.impact.newCostNav.toFixed(4)}</span>
+                    {swingResult.impact.costReduction > 0 && <span className="text-emerald-600">整体降 {swingResult.impact.costReduction.toFixed(4)}</span>}
+                  </div>
+                  {swingResult.basePosition?.baseCostDrop > 0 && (
+                    <div className="mt-1.5 pt-1.5 border-t border-indigo-200/60 flex items-center justify-between">
+                      <span className="text-amber-700 font-medium">底仓成本变化</span>
+                      <span className="text-emerald-700 font-bold">
+                        {swingResult.basePosition.baseCostNav.toFixed(4)} → {swingResult.basePosition.newBaseCostNav.toFixed(4)}
+                        <span className="ml-1.5 text-emerald-600">降 {swingResult.basePosition.baseCostDrop.toFixed(4)}</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-4 text-sm text-gray-400">
+                {swingResult.unpairedBuys.length === 0 && swingResult.unpairedSells?.length === 0
+                  ? '无历史交易记录'
+                  : '当前净值下无差价操作机会'}
+              </div>
+            )}
+
+            {/* 下跌补仓策略 */}
+            {swingResult.dipStrategy?.enabled && (() => {
+              const dip = swingResult.dipStrategy
+              return (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <h4 className="text-xs font-semibold text-orange-600 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" /></svg>
+                    下跌补仓策略（距成本 -{dip.dropFromCost.toFixed(1)}%）
+                  </h4>
+                  <p className="text-[11px] text-gray-500 mb-3">{dip.outlook}</p>
+
+                  <div className="space-y-2">
+                    {dip.levels.map((lv: any) => (
+                      <div key={lv.level} className="rounded-lg bg-orange-50/60 p-2.5 border border-orange-100/80">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white ${
+                              lv.level <= 2 ? 'bg-orange-400' : lv.level <= 3 ? 'bg-orange-500' : 'bg-red-500'
+                            }`}>{lv.level}</span>
+                            <span className="text-xs font-medium text-gray-700">
+                              {lv.dropPct === 0 ? '当前价位' : `跌${lv.dropPct.toFixed(1)}%`} · {fmtNav(lv.nav)}
+                            </span>
+                          </div>
+                          <span className="text-xs font-bold text-orange-700">{fmt(lv.amount)}</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-[11px] text-gray-500 mb-1.5">
+                          <span>买入 {lv.shares.toFixed(2)} 份</span>
+                          <span>新成本 {lv.newCostNav.toFixed(4)}</span>
+                          {lv.costReduction > 0 && (
+                            <span className="text-emerald-600 font-medium">降 {lv.costReduction.toFixed(4)}</span>
+                          )}
+                        </div>
+                        {lv.rebounds.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {lv.rebounds.map((rb: any, j: number) => (
+                              <span key={j} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-[10px] text-emerald-700 border border-emerald-100">
+                                回弹至{rb.targetLabel}（{rb.targetNav.toFixed(4)}）→ 利润{fmt(rb.sellProfit)}
+                                {rb.baseCostDrop > 0 && <span className="font-bold">底仓降{rb.baseCostDrop.toFixed(4)}</span>}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <p className="text-[10px] text-gray-400 mt-1">{lv.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 全部执行汇总 */}
+                  <div className="mt-2 bg-orange-50 rounded-lg p-2.5 text-xs border border-orange-200/60">
+                    <div className="flex items-center justify-between">
+                      <span className="text-orange-700 font-medium">全部补仓后</span>
+                      <span className="text-orange-800 font-bold">投入 {fmt(dip.totalPlan.totalAmount)}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-orange-600">
+                      <span>新成本 {dip.totalPlan.newCostNav.toFixed(4)}</span>
+                      {dip.totalPlan.totalCostReduction > 0 && (
+                        <span className="text-emerald-600 font-bold">成本降 {dip.totalPlan.totalCostReduction.toFixed(4)}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        )}
+      </div>
+
       {/* Strategy Model */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
@@ -533,7 +848,7 @@ export default function FundDetail() {
             <div>
               <h3 className="text-sm font-semibold text-gray-900">策略模型</h3>
               <p className="text-xs text-gray-400">
-                止盈 {stopProfit}% / 止损 {stopLoss}%
+                止盈 {stopProfit}% / 止损 {stopLoss}% / 底仓 {fund.base_position_pct ?? 30}%
                 {mNav > 0 && <> &middot; 当前净值 {fmtNav(mNav)}</>}
               </p>
             </div>
@@ -549,7 +864,7 @@ export default function FundDetail() {
               </button>
             )}
             <button
-              onClick={() => { setEditingStrategy(!editingStrategy); setStrategyForm({ stop_profit_pct: stopProfit, stop_loss_pct: stopLoss, market_nav: mNav }) }}
+              onClick={() => { setEditingStrategy(!editingStrategy); setStrategyForm({ stop_profit_pct: stopProfit, stop_loss_pct: stopLoss, market_nav: mNav, base_position_pct: fund.base_position_pct ?? 30 }) }}
               className="text-xs text-blue-600 hover:text-blue-800 font-medium"
             >
               {editingStrategy ? '取消' : '设置'}
@@ -575,6 +890,17 @@ export default function FundDetail() {
                 <label className="block text-xs text-gray-500 mb-1">当前市场净值</label>
                 <input type="number" step="0.0001" value={strategyForm.market_nav || ''} onChange={e => setStrategyForm({ ...strategyForm, market_nav: Number(e.target.value) })}
                   className="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0.0000" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">底仓比例 (%)</label>
+                <input type="number" step="5" min="0" max="100" value={strategyForm.base_position_pct} onChange={e => setStrategyForm({ ...strategyForm, base_position_pct: Number(e.target.value) })}
+                  className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                {holdingShares > 0 && (
+                  <p className="text-[11px] text-amber-600 mt-1">
+                    = {fmtNum(holdingShares * strategyForm.base_position_pct / 100, 2)}份
+                    {(strategyForm.market_nav || mNav) > 0 && <> ≈ {fmt(holdingShares * strategyForm.base_position_pct / 100 * (strategyForm.market_nav || mNav))}</>}
+                  </p>
+                )}
               </div>
               <button onClick={handleSaveStrategy} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors">
                 保存
@@ -830,6 +1156,109 @@ export default function FundDetail() {
                           <td className={`py-1.5 font-medium ${l.action.includes('加') ? 'text-emerald-600' : 'text-red-600'}`}>{l.action}</td>
                           <td className="py-1.5 text-right">{fmt(l.amount)}</td>
                           <td className="py-1.5 pl-3 text-gray-500">{l.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* 短线操作计划 */}
+            <div className="px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">短线计划（本周）</h4>
+              <p className="text-xs text-gray-500 mb-3">{strategy.shortTermPlan.outlook}</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-gray-400">
+                    <th className="text-left py-1.5 font-medium">触发条件</th>
+                    <th className="text-left py-1.5 font-medium">操作</th>
+                    <th className="text-right py-1.5 font-medium">金额</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {strategy.shortTermPlan.triggers.map((t, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="py-1.5 text-gray-700">{t.condition}</td>
+                        <td className={`py-1.5 font-medium ${t.action.includes('买') ? 'text-emerald-600' : 'text-red-600'}`}>{t.action}</td>
+                        <td className="py-1.5 text-right">{fmt(t.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex gap-4 mt-2 text-xs text-gray-400">
+                <span>止损位 <strong className="text-red-600">{strategy.shortTermPlan.stopLossNav.toFixed(4)}</strong></span>
+                <span>止盈位 <strong className="text-green-600">{strategy.shortTermPlan.takeProfitNav.toFixed(4)}</strong></span>
+              </div>
+            </div>
+
+            {/* 长线定投计划 */}
+            <div className="px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">长线计划（{strategy.longTermPlan.horizonMonths}个月）</h4>
+              <p className="text-xs text-gray-500 mb-3">{strategy.longTermPlan.outlook}</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3">
+                <div className="bg-blue-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-blue-400">基础月定投</div>
+                  <div className="text-sm font-bold text-blue-700">{fmt(strategy.longTermPlan.monthlyBase)}</div>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-blue-400">目标成本</div>
+                  <div className="text-sm font-bold text-blue-700">{strategy.longTermPlan.targetCostNav.toFixed(4)}</div>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-blue-400">预期年化</div>
+                  <div className={`text-sm font-bold ${strategy.longTermPlan.targetGainPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{strategy.longTermPlan.targetGainPct >= 0 ? '+' : ''}{strategy.longTermPlan.targetGainPct}%</div>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-blue-400">投资周期</div>
+                  <div className="text-sm font-bold text-blue-700">{strategy.longTermPlan.horizonMonths} 个月</div>
+                </div>
+              </div>
+              <h5 className="text-[10px] text-gray-400 mb-1.5">智能定投规则</h5>
+              <div className="space-y-1">
+                {strategy.longTermPlan.smartDCA.map((d, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-1.5">
+                    <span className="text-gray-600">{d.condition}</span>
+                    <span className="font-medium text-gray-900">{d.multiplier}x → {fmt(d.amount)}/月</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 亏损翻盈计划 */}
+            {strategy.recoveryPlan.isLosing && (
+              <div className="px-5 py-4">
+                <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
+                  亏损翻盈计划
+                  <span className="ml-2 text-red-600 font-bold">-{fmt(strategy.recoveryPlan.currentLoss)} ({strategy.recoveryPlan.currentLossPct}%)</span>
+                </h4>
+                <p className="text-xs text-gray-600 mb-3 leading-relaxed">{strategy.recoveryPlan.recommendation}</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-400 bg-gray-50">
+                      <th className="text-left px-2 py-2 font-medium rounded-l-lg">方案</th>
+                      <th className="text-right px-2 py-2 font-medium">补仓金额</th>
+                      <th className="text-right px-2 py-2 font-medium">新成本</th>
+                      <th className="text-right px-2 py-2 font-medium">回本涨幅</th>
+                      <th className="text-right px-2 py-2 font-medium rounded-r-lg">预估天数</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-gray-50">
+                      <tr className="text-gray-400">
+                        <td className="px-2 py-2">不补仓</td>
+                        <td className="px-2 py-2 text-right">-</td>
+                        <td className="px-2 py-2 text-right">{strategy.recoveryPlan.breakevenNav.toFixed(4)}</td>
+                        <td className="px-2 py-2 text-right text-red-600">+{strategy.position.costNav > 0 && strategy.fund.market_nav > 0 ? ((strategy.position.costNav - strategy.fund.market_nav) / strategy.fund.market_nav * 100).toFixed(1) : '?'}%</td>
+                        <td className="px-2 py-2 text-right">-</td>
+                      </tr>
+                      {strategy.recoveryPlan.scenarios.map((s, i) => (
+                        <tr key={i} className={`hover:bg-gray-50 ${i === 0 ? 'bg-emerald-50/30' : ''}`}>
+                          <td className="px-2 py-2 font-medium text-gray-700">{s.label}</td>
+                          <td className="px-2 py-2 text-right text-emerald-600 font-medium">{fmt(s.investAmount)}</td>
+                          <td className="px-2 py-2 text-right font-mono">{s.newCostNav.toFixed(4)}</td>
+                          <td className="px-2 py-2 text-right">
+                            <span className={s.breakevenChangePct <= 3 ? 'text-emerald-600 font-bold' : 'text-amber-600'}>+{s.breakevenChangePct.toFixed(1)}%</span>
+                          </td>
+                          <td className="px-2 py-2 text-right text-gray-500">~{s.estimatedDays}天</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1183,183 +1612,75 @@ export default function FundDetail() {
         </div>
       )}
 
-      {/* Positions */}
-      {positions.length === 0 ? (
+      {/* 交易记录 */}
+      {transactions.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-xl border border-gray-200">
           <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
             <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
           </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-1">暂无持仓</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">暂无交易</h3>
           <p className="text-gray-500 text-sm">添加第一条交易记录开始追踪此基金。</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">持仓明细</h2>
-            <div className="flex gap-2">
-              <button onClick={expandAll} className="text-xs text-blue-600 hover:text-blue-800 font-medium">全部展开</button>
-              <span className="text-gray-300">|</span>
-              <button onClick={collapseAll} className="text-xs text-blue-600 hover:text-blue-800 font-medium">全部折叠</button>
-            </div>
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
+            <h2 className="text-sm font-semibold text-gray-900">交易记录 <span className="text-gray-400 font-normal">({transactions.length}笔)</span></h2>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={transactions.length > 0 && transactions.every(tx => selected.has(tx.id))}
+                onChange={() => {
+                  if (transactions.every(tx => selected.has(tx.id))) {
+                    setSelected(new Set())
+                  } else {
+                    setSelected(new Set(transactions.map(tx => tx.id)))
+                  }
+                }}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-xs text-gray-500">全选</span>
+            </label>
           </div>
-          {positions.map(pos => {
-            const isExpanded = expandedAssets.has(pos.asset)
-            const assetTxs = txByAsset[pos.asset] || []
-            const allSelected = assetTxs.length > 0 && assetTxs.every(tx => selected.has(tx.id))
+          {transactions.map(tx => {
+            const cfg = typeConfig[tx.type]
+            const total = tx.type === 'dividend' ? tx.price : tx.shares * tx.price
+            const isSelected = selected.has(tx.id)
 
             return (
-              <div key={pos.asset} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                {/* Position Header - clickable */}
-                <div
-                  onClick={() => toggleAsset(pos.asset)}
-                  className="p-5 cursor-pointer hover:bg-gray-50 transition-colors"
-                >
-                  <div className="flex items-center gap-4">
-                    {/* Expand arrow */}
-                    <svg className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-
-                    {/* Asset info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3">
-                        <span className="text-lg font-bold font-mono text-gray-900">{pos.asset}</span>
-                        <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
-                          {pos.tx_count} 笔
-                        </span>
-                        {!isExpanded && assetTxs.filter(tx => selected.has(tx.id)).length > 0 && (
-                          <span className="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
-                            已选 {assetTxs.filter(tx => selected.has(tx.id)).length}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Stats grid */}
-                    <div className="hidden sm:grid sm:grid-cols-4 gap-6 text-right">
-                      <div>
-                        <div className="text-xs text-gray-400 tracking-wide">持有份额</div>
-                        <div className="text-sm font-semibold text-gray-900 mt-0.5">{fmtNum(pos.holding_shares, 2)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400 tracking-wide">单位净值</div>
-                        <div className="text-sm font-semibold text-gray-900 mt-0.5">{fmtNav(pos.nav)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400 tracking-wide">总成本</div>
-                        <div className="text-sm font-semibold text-gray-900 mt-0.5">{fmt(pos.total_cost)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400 tracking-wide">盈亏</div>
-                        <div className={`text-sm font-semibold mt-0.5 ${pos.gain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                          {pos.gain >= 0 ? '+' : ''}{fmt(pos.gain)} ({pct(pos.gain_pct)})
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Mobile stats */}
-                  <div className="sm:hidden grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-gray-100">
-                    <div>
-                      <span className="text-xs text-gray-400">持有份额</span>
-                      <div className="text-sm font-semibold">{fmtNum(pos.holding_shares, 2)}</div>
-                    </div>
-                    <div>
-                      <span className="text-xs text-gray-400">单位净值</span>
-                      <div className="text-sm font-semibold">{fmtNav(pos.nav)}</div>
-                    </div>
-                    <div>
-                      <span className="text-xs text-gray-400">总成本</span>
-                      <div className="text-sm font-semibold">{fmt(pos.total_cost)}</div>
-                    </div>
-                    <div>
-                      <span className="text-xs text-gray-400">盈亏</span>
-                      <div className={`text-sm font-semibold ${pos.gain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {pos.gain >= 0 ? '+' : ''}{fmt(pos.gain)}
-                      </div>
-                    </div>
+              <div key={tx.id} className={`px-5 py-3 flex items-center gap-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50/50' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleSelect(tx.id)}
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                />
+                <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.bg} ${cfg.text} ${cfg.border} shrink-0`}>
+                  {cfg.icon} {cfg.label}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-gray-900">{formatDate(tx.date)}</div>
+                  <div className="text-xs text-gray-500">
+                    {tx.type !== 'dividend'
+                      ? <>{tx.shares} 份 @ {fmtNav(tx.price)}</>
+                      : <>分红</>
+                    }
+                    {tx.notes && <span className="ml-2 text-gray-400">&middot; {tx.notes}</span>}
                   </div>
                 </div>
-
-                {/* Expanded: Transaction List */}
-                {isExpanded && (
-                  <div className="border-t border-gray-200">
-                    {/* Select all bar */}
-                    <div className="px-5 py-2.5 bg-gray-50 flex items-center gap-3 border-b border-gray-100">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={allSelected}
-                          onChange={() => selectAllForAsset(pos.asset)}
-                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-xs font-medium text-gray-500">全选</span>
-                      </label>
-                      <span className="text-xs text-gray-400">
-                        {assetTxs.filter(tx => selected.has(tx.id)).length > 0 && (
-                          <>本组 {assetTxs.filter(tx => selected.has(tx.id)).length}/{assetTxs.length}</>
-                        )}
-                        {selected.size > 0 && assetTxs.filter(tx => selected.has(tx.id)).length > 0 && selected.size > assetTxs.filter(tx => selected.has(tx.id)).length && (
-                          <> &middot; 全部已选 {selected.size}</>
-                        )}
-                      </span>
-                    </div>
-
-                    {/* Transaction rows */}
-                    {assetTxs.map(tx => {
-                      const cfg = typeConfig[tx.type]
-                      const total = tx.type === 'dividend' ? tx.price : tx.shares * tx.price
-                      const isSelected = selected.has(tx.id)
-
-                      return (
-                        <div key={tx.id} className={`px-5 py-3 flex items-center gap-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50/50' : ''}`}>
-                          {/* Checkbox */}
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSelect(tx.id)}
-                            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
-                          />
-
-                          {/* Type badge */}
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.bg} ${cfg.text} ${cfg.border} shrink-0`}>
-                            {cfg.icon} {cfg.label}
-                          </span>
-
-                          {/* Date & details */}
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm text-gray-900">{formatDate(tx.date)}</div>
-                            <div className="text-xs text-gray-500">
-                              {tx.type !== 'dividend'
-                                ? <>{tx.shares} 份 @ {fmtNav(tx.price)}</>
-                                : <>分红</>
-                              }
-                              {tx.notes && <span className="ml-2 text-gray-400">&middot; {tx.notes}</span>}
-                            </div>
-                          </div>
-
-                          {/* Amount */}
-                          <div className={`text-sm font-semibold shrink-0 ${tx.type === 'sell' ? 'text-red-600' : 'text-gray-900'}`}>
-                            {tx.type === 'sell' ? '-' : ''}{fmt(total)}
-                          </div>
-
-                          {/* Actions */}
-                          <div className="flex gap-1 shrink-0">
-                            <button onClick={(e) => { e.stopPropagation(); openSplit(tx) }} className="p-1.5 rounded-md text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="拆分">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
-                            </button>
-                            <button onClick={(e) => { e.stopPropagation(); startEdit(tx) }} className="p-1.5 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="编辑">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                            </button>
-                            <button onClick={(e) => { e.stopPropagation(); setDeleteId(tx.id) }} className="p-1.5 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="删除">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
+                <div className={`text-sm font-semibold shrink-0 ${tx.type === 'sell' ? 'text-red-600' : 'text-gray-900'}`}>
+                  {tx.type === 'sell' ? '-' : ''}{fmt(total)}
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => openSplit(tx)} className="p-1.5 rounded-md text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors" title="拆分">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+                  </button>
+                  <button onClick={() => startEdit(tx)} className="p-1.5 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="编辑">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                  </button>
+                  <button onClick={() => setDeleteId(tx.id)} className="p-1.5 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="删除">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
+                </div>
               </div>
             )
           })}

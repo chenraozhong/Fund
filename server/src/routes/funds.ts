@@ -13,6 +13,7 @@ router.get('/', (_req: Request, res: Response) => {
       COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
     FROM funds f
     LEFT JOIN transactions t ON t.fund_id = f.id
+    WHERE f.deleted_at IS NULL
     GROUP BY f.id
     ORDER BY f.created_at DESC
   `).all();
@@ -61,8 +62,42 @@ router.post('/', (req: Request, res: Response) => {
   res.status(201).json(fund);
 });
 
+// 回收站列表
+router.get('/trash/list', (_req: Request, res: Response) => {
+  const funds = db.prepare(`
+    SELECT f.*, COUNT(t.id) as tx_count
+    FROM funds f
+    LEFT JOIN transactions t ON t.fund_id = f.id
+    WHERE f.deleted_at IS NOT NULL
+    GROUP BY f.id
+    ORDER BY f.deleted_at DESC
+  `).all();
+  res.json(funds);
+});
+
+// 恢复基金
+router.post('/trash/:id/restore', (req: Request, res: Response) => {
+  const result = db.prepare('UPDATE funds SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL').run(req.params.id);
+  if (result.changes === 0) {
+    res.status(404).json({ error: '未找到该回收站基金' });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// 永久删除
+router.delete('/trash/:id/permanent', (req: Request, res: Response) => {
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
+  if (!fund) {
+    res.status(404).json({ error: '只能永久删除回收站中的基金' });
+    return;
+  }
+  db.prepare('DELETE FROM funds WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
 router.put('/:id', (req: Request, res: Response) => {
-  const { name, color, code, market_nav, stop_profit_pct, stop_loss_pct } = req.body;
+  const { name, color, code, market_nav, stop_profit_pct, stop_loss_pct, base_position_pct } = req.body;
   const { id } = req.params;
   db.prepare(`UPDATE funds SET
     name = COALESCE(?, name),
@@ -70,9 +105,10 @@ router.put('/:id', (req: Request, res: Response) => {
     code = COALESCE(?, code),
     market_nav = COALESCE(?, market_nav),
     stop_profit_pct = COALESCE(?, stop_profit_pct),
-    stop_loss_pct = COALESCE(?, stop_loss_pct)
+    stop_loss_pct = COALESCE(?, stop_loss_pct),
+    base_position_pct = COALESCE(?, base_position_pct)
     WHERE id = ?`
-  ).run(name, color, code ?? null, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, id);
+  ).run(name, color, code ?? null, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, base_position_pct ?? null, id);
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id);
   if (!fund) {
     res.status(404).json({ error: 'Fund not found' });
@@ -274,14 +310,16 @@ router.post('/:id/gain', (req: Request, res: Response) => {
   });
 });
 
+// 软删除（移入回收站）
 router.delete('/:id', (req: Request, res: Response) => {
-  const result = db.prepare('DELETE FROM funds WHERE id = ?').run(req.params.id);
+  const result = db.prepare("UPDATE funds SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(req.params.id);
   if (result.changes === 0) {
     res.status(404).json({ error: 'Fund not found' });
     return;
   }
   res.json({ success: true });
 });
+
 
 // Get fund detail with positions grouped by asset
 router.get('/:id/positions', (req: Request, res: Response) => {

@@ -67,6 +67,38 @@ interface PositionAdvice {
   costEfficiency: number;     // 当前成本效率 (相对MA20)
 }
 
+interface ShortTermPlan {
+  triggers: { condition: string; action: string; amount: number; nav: number }[];
+  stopLossNav: number;
+  takeProfitNav: number;
+  outlook: string;
+}
+
+interface LongTermPlan {
+  monthlyBase: number;       // 基础月定投
+  smartDCA: { condition: string; multiplier: number; amount: number }[];
+  targetCostNav: number;     // 6个月后目标成本均价
+  targetGainPct: number;     // 预期年化收益
+  horizonMonths: number;
+  outlook: string;
+}
+
+interface RecoveryPlan {
+  isLosing: boolean;
+  currentLoss: number;       // 当前亏损金额
+  currentLossPct: number;
+  breakevenNav: number;      // 不补仓时回本净值
+  scenarios: {
+    label: string;
+    investAmount: number;    // 补仓金额
+    newCostNav: number;      // 补仓后新成本
+    newShares: number;
+    breakevenChangePct: number; // 只需涨x%回本
+    estimatedDays: number;   // 基于波动率估算回本天数
+  }[];
+  recommendation: string;
+}
+
 interface StrategyResult {
   fund: { id: number; name: string; code: string; market_nav: number };
   position: {
@@ -77,8 +109,11 @@ interface StrategyResult {
   risk: RiskMetrics;
   market: SectorInfo;
   signals: Signal[];
-  compositeScore: number;     // -100 ~ +100，<-30卖出，>30买入
+  compositeScore: number;
   advice: PositionAdvice;
+  shortTermPlan: ShortTermPlan;
+  longTermPlan: LongTermPlan;
+  recoveryPlan: RecoveryPlan;
   summary: {
     verdict: string;
     verdictColor: string;
@@ -625,6 +660,207 @@ function generateSummary(
 }
 
 // ============================================================
+// 短线计划
+// ============================================================
+
+function generateShortTermPlan(
+  nav: number, tech: TechnicalIndicators, risk: RiskMetrics,
+  costNav: number, gainPct: number, totalCost: number,
+  stopProfit: number, stopLoss: number
+): ShortTermPlan {
+  const atrPct = nav > 0 ? (tech.atr14 / nav) * 100 : 1;
+  const base = Math.max(totalCost * 0.05, 300);
+  const triggers: ShortTermPlan['triggers'] = [];
+
+  // 下跌触发：分3档加仓
+  const dip1 = r4(nav * (1 - atrPct / 100));
+  const dip2 = r4(nav * (1 - atrPct * 2 / 100));
+  const dip3 = r4(tech.support);
+  triggers.push({ condition: `净值跌至 ${dip1}（-${atrPct.toFixed(1)}%）`, action: '轻仓买入', amount: Math.round(base * 0.5), nav: dip1 });
+  triggers.push({ condition: `净值跌至 ${dip2}（-${(atrPct * 2).toFixed(1)}%）`, action: '常规买入', amount: Math.round(base), nav: dip2 });
+  if (dip3 < dip2) triggers.push({ condition: `净值跌至支撑位 ${dip3}`, action: '重仓买入', amount: Math.round(base * 1.5), nav: dip3 });
+
+  // 上涨触发
+  const rise1 = r4(nav * (1 + atrPct / 100));
+  const rise2 = r4(tech.resistance);
+  if (gainPct > 0) {
+    triggers.push({ condition: `净值涨至 ${rise1}（+${atrPct.toFixed(1)}%）`, action: '小额止盈', amount: Math.round(base * 0.3), nav: rise1 });
+    if (gainPct >= stopProfit * 0.8) {
+      triggers.push({ condition: `净值涨至阻力位 ${rise2}`, action: '大幅止盈', amount: Math.round(base * 2), nav: rise2 });
+    }
+  } else {
+    triggers.push({ condition: `净值涨至成本位 ${r4(costNav)}`, action: '回本减仓（可选）', amount: Math.round(base * 0.5), nav: r4(costNav) });
+  }
+
+  // 止损/止盈位
+  const stopLossNav = r4(costNav * (1 - stopLoss / 100));
+  const takeProfitNav = r4(costNav * (1 + stopProfit / 100));
+
+  // 短线展望
+  let outlook = '';
+  if (tech.trendScore >= 30) outlook = '短期趋势偏强，以持有为主，回调可加仓。';
+  else if (tech.trendScore >= 0) outlook = '短期震荡偏多，轻仓参与，控制单次金额。';
+  else if (tech.trendScore >= -30) outlook = '短期方向不明，观望为主，严格执行触发条件。';
+  else outlook = '短期偏弱，不宜追涨，等待超跌信号再入场。';
+
+  if (risk.volatility20d > 25) outlook += '波动率偏高，建议缩小每次操作金额至正常的60%。';
+
+  return { triggers, stopLossNav, takeProfitNav, outlook };
+}
+
+// ============================================================
+// 长线计划
+// ============================================================
+
+function generateLongTermPlan(
+  nav: number, tech: TechnicalIndicators, risk: RiskMetrics,
+  costNav: number, totalCost: number, holdingShares: number,
+  gainPct: number, market: SectorInfo
+): LongTermPlan {
+  // 基础月定投金额：持仓的5-8%，最低500
+  const monthlyBase = Math.max(Math.round(totalCost * 0.06 / 100) * 100, 500);
+
+  // 智能定投条件
+  const smartDCA: LongTermPlan['smartDCA'] = [];
+  smartDCA.push({
+    condition: `净值 < MA20（${tech.ma20.toFixed(4)}）`,
+    multiplier: 1.5,
+    amount: Math.round(monthlyBase * 1.5),
+  });
+  smartDCA.push({
+    condition: `MA20 ≤ 净值 < MA10（${tech.ma10.toFixed(4)}）`,
+    multiplier: 1.0,
+    amount: monthlyBase,
+  });
+  smartDCA.push({
+    condition: `净值 ≥ MA10`,
+    multiplier: 0.5,
+    amount: Math.round(monthlyBase * 0.5),
+  });
+  smartDCA.push({
+    condition: `净值 < 布林下轨（${tech.bollingerBands.lower.toFixed(4)}）`,
+    multiplier: 2.0,
+    amount: Math.round(monthlyBase * 2),
+  });
+
+  // 6个月后目标成本
+  // 假设平均定投在MA20附近，6个月后加权平均成本
+  const avgInvestNav = tech.ma20 > 0 ? tech.ma20 : nav;
+  const totalNewInvest = monthlyBase * 6;
+  const newShares = avgInvestNav > 0 ? totalNewInvest / avgInvestNav : 0;
+  const targetCostNav = (holdingShares + newShares) > 0
+    ? r4((totalCost + totalNewInvest) / (holdingShares + newShares))
+    : costNav;
+
+  // 预期年化收益（基于历史日均收益率年化）
+  const dailyAvg = risk.winRate > 50 ? risk.profitLossRatio * 0.001 : -0.001;
+  const targetGainPct = Math.round(dailyAvg * 250 * 100) / 100;
+
+  // 展望
+  let outlook = '';
+  if (market.marketRegime === 'bull') {
+    outlook = `大盘偏多，${market.sector}板块有配置价值。建议维持定投节奏，可适当提高单次金额。`;
+  } else if (market.marketRegime === 'bear') {
+    outlook = `大盘偏弱，但正是低位收集筹码的好时机。坚持智能定投，低位多买高位少买，耐心等待周期反转。`;
+  } else {
+    outlook = `市场震荡期，适合网格化操作。按MA20上下浮动调整定投金额，积少成多降低成本。`;
+  }
+
+  if (gainPct < -10) {
+    outlook += `当前浮亏较大，不宜急于止损。通过持续定投摊低成本是当前最优策略。`;
+  }
+
+  return { monthlyBase, smartDCA, targetCostNav, targetGainPct, horizonMonths: 6, outlook };
+}
+
+// ============================================================
+// 亏损翻盈计划
+// ============================================================
+
+function generateRecoveryPlan(
+  nav: number, costNav: number, totalCost: number,
+  holdingShares: number, gainPct: number,
+  risk: RiskMetrics, tech: TechnicalIndicators
+): RecoveryPlan {
+  const isLosing = gainPct < 0;
+  const currentLoss = isLosing ? Math.round((totalCost - holdingShares * nav) * 100) / 100 : 0;
+  const breakevenNav = costNav; // 不补仓时，净值需涨回成本均价
+
+  if (!isLosing || nav <= 0 || costNav <= 0) {
+    return {
+      isLosing: false, currentLoss: 0, currentLossPct: 0,
+      breakevenNav: costNav, scenarios: [],
+      recommendation: gainPct >= 0 ? '当前持仓盈利中，无需翻盈计划。' : '',
+    };
+  }
+
+  // 日均波动率（绝对值）
+  const dailyVol = risk.volatility20d / Math.sqrt(250); // 日波动率 %
+  const scenarios: RecoveryPlan['scenarios'] = [];
+
+  // 生成3档补仓方案
+  const ratios = [
+    { label: '小额补仓（20%仓位）', ratio: 0.2 },
+    { label: '中等补仓（50%仓位）', ratio: 0.5 },
+    { label: '大额补仓（100%仓位）', ratio: 1.0 },
+  ];
+
+  for (const { label, ratio } of ratios) {
+    const investAmount = Math.round(totalCost * ratio);
+    const newShares = nav > 0 ? investAmount / nav : 0;
+    const newTotalCost = totalCost + investAmount;
+    const newTotalShares = holdingShares + newShares;
+    const newCostNav = newTotalShares > 0 ? r4(newTotalCost / newTotalShares) : costNav;
+    const breakevenChangePct = nav > 0 ? Math.round(((newCostNav - nav) / nav) * 10000) / 100 : 0;
+
+    // 估算回本天数：E[days] = breakevenChangePct / dailyDrift
+    // 保守估计日均涨幅 = 0（随机游走），用波动率估算
+    // 简化：平均需 (changePct / dailyVol)^2 个交易日 (反射原理)
+    let estimatedDays = 0;
+    if (dailyVol > 0 && breakevenChangePct > 0) {
+      estimatedDays = Math.round((breakevenChangePct / dailyVol) ** 2);
+      estimatedDays = Math.min(estimatedDays, 365); // cap at 1 year
+    }
+
+    scenarios.push({
+      label, investAmount, newCostNav,
+      newShares: Math.round(newTotalShares * 100) / 100,
+      breakevenChangePct, estimatedDays,
+    });
+  }
+
+  // 推荐方案
+  let recommendation = '';
+  const lossPct = Math.abs(gainPct);
+
+  if (lossPct <= 3) {
+    recommendation = `浮亏仅${lossPct.toFixed(1)}%，接近回本。建议耐心持有等待净值回升，无需补仓。`;
+  } else if (lossPct <= 8) {
+    recommendation = `浮亏${lossPct.toFixed(1)}%，适合小额补仓（方案一）摊低成本。补仓后只需涨${scenarios[0].breakevenChangePct.toFixed(1)}%即可回本。`;
+  } else if (lossPct <= 15) {
+    recommendation = `浮亏${lossPct.toFixed(1)}%，建议中等补仓（方案二），将成本大幅拉低至${scenarios[1].newCostNav.toFixed(4)}。`;
+    if (tech.trendScore < -30) recommendation += '但当前趋势偏弱，建议分3次在未来1-2周内逐步补入，不要一次性打满。';
+    else recommendation += '当前技术面尚可，可择机一次性补入。';
+  } else {
+    recommendation = `浮亏${lossPct.toFixed(1)}%较深。`;
+    if (tech.trendScore < -40) {
+      recommendation += '趋势仍在恶化，暂不建议大额补仓。先小额补仓（方案一）观察，待趋势企稳（RSI>30且MACD金叉）再加码。';
+    } else {
+      recommendation += '底部信号初现，建议分批补仓：本周先投入方案一金额，若继续下跌再投入方案二。切忌一次All-in。';
+    }
+  }
+
+  return {
+    isLosing: true,
+    currentLoss,
+    currentLossPct: Math.round(lossPct * 100) / 100,
+    breakevenNav,
+    scenarios,
+    recommendation,
+  };
+}
+
+// ============================================================
 // 工具函数
 // ============================================================
 
@@ -654,7 +890,9 @@ router.get('/funds/:id', async (req: Request, res: Response) => {
   const holdingShares = row.holding_shares;
   const totalCost = row.cost_basis;
   const costNav = holdingShares > 0 ? totalCost / holdingShares : 0;
-  const mNav = fund.market_nav || 0;
+  // 支持 ?nav=xxx 实时净值覆盖
+  const realtimeNav = req.query.nav ? parseFloat(req.query.nav as string) : 0;
+  const mNav = realtimeNav > 0 ? realtimeNav : (fund.market_nav || 0);
   const marketValue = mNav > 0 ? holdingShares * mNav : totalCost;
   const gain = marketValue - totalCost;
   const gainPct = totalCost > 0 ? (gain / totalCost) * 100 : 0;
@@ -689,6 +927,11 @@ router.get('/funds/:id', async (req: Request, res: Response) => {
   // 生成总结
   const summary = generateSummary(compositeScore, technical, riskMetrics, market, gainPct, signals);
 
+  // 生成投资计划
+  const shortTermPlan = generateShortTermPlan(effectiveNav, technical, riskMetrics, costNav, gainPct, totalCost, stopProfit, stopLoss);
+  const longTermPlan = generateLongTermPlan(effectiveNav, technical, riskMetrics, costNav, totalCost, holdingShares, gainPct, market);
+  const recoveryPlan = generateRecoveryPlan(effectiveNav, costNav, totalCost, holdingShares, gainPct, riskMetrics, technical);
+
   const result: StrategyResult = {
     fund: { id: fund.id, name: fund.name, code: fund.code, market_nav: mNav },
     position: {
@@ -700,13 +943,384 @@ router.get('/funds/:id', async (req: Request, res: Response) => {
     },
     technical, risk: riskMetrics, market, signals,
     compositeScore,
-    advice,
+    advice, shortTermPlan, longTermPlan, recoveryPlan,
     summary,
     navHistory: navHistory.slice(-30),
     timestamp: new Date().toISOString(),
   };
 
   res.json(result);
+});
+
+// ============================================================
+// 实时配对交易建议
+// ============================================================
+
+router.get('/funds/:id/swing', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const realtimeNav = req.query.nav ? parseFloat(req.query.nav as string) : 0;
+
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id) as any;
+  if (!fund) { res.status(404).json({ error: '基金不存在' }); return; }
+
+  const nav = realtimeNav > 0 ? realtimeNav : (fund.market_nav || 0);
+  if (nav <= 0) { res.status(400).json({ error: '需要提供净值' }); return; }
+
+  // 获取已配对的交易ID
+  const pairedTxIds = new Set<number>();
+  const trades = db.prepare('SELECT * FROM trades WHERE fund_id = ?').all(id) as any[];
+  // 通过买卖日期+价格+份额匹配原始交易（trades表记录了配对关系）
+
+  // 获取所有买入交易
+  const allBuys = db.prepare(`
+    SELECT * FROM transactions WHERE fund_id = ? AND type = 'buy' ORDER BY date ASC
+  `).all(id) as any[];
+
+  // 获取所有卖出交易
+  const allSells = db.prepare(`
+    SELECT * FROM transactions WHERE fund_id = ? AND type = 'sell' ORDER BY date ASC
+  `).all(id) as any[];
+
+  // === FIFO 配对：找出未配对的买入和卖出 ===
+
+  // 未配对买入：总买入份额 - 总卖出份额 = 持仓，从最早的买入开始扣除已卖出份额
+  let remainSold = allSells.reduce((s: number, t: any) => s + t.shares, 0);
+  const unpairedBuys: { id: number; date: string; shares: number; price: number; remainShares: number; profitPct: number }[] = [];
+  for (const buy of allBuys) {
+    let remain = buy.shares;
+    if (remainSold > 0) { const m = Math.min(remainSold, remain); remain -= m; remainSold -= m; }
+    if (remain > 0.001) {
+      unpairedBuys.push({
+        id: buy.id, date: buy.date, shares: buy.shares, price: buy.price,
+        remainShares: r4(remain),
+        profitPct: buy.price > 0 ? Math.round(((nav - buy.price) / buy.price) * 10000) / 100 : 0,
+      });
+    }
+  }
+
+  // 未配对卖出：总卖出份额 - 总买入份额（从最早卖出扣除已买入回来的份额）
+  // 逻辑：如果之前高价卖出过，后来又没买回等量份额，那就是未配对的卖出
+  let remainBought = allBuys.reduce((s: number, t: any) => s + t.shares, 0);
+  const unpairedSells: { id: number; date: string; shares: number; price: number; remainShares: number; spreadPct: number }[] = [];
+  for (const sell of allSells) {
+    let remain = sell.shares;
+    if (remainBought > 0) { const m = Math.min(remainBought, remain); remain -= m; remainBought -= m; }
+    if (remain > 0.001) {
+      unpairedSells.push({
+        id: sell.id, date: sell.date, shares: sell.shares, price: sell.price,
+        remainShares: r4(remain),
+        spreadPct: sell.price > 0 ? Math.round(((sell.price - nav) / nav) * 10000) / 100 : 0,
+      });
+    }
+  }
+
+  // 持仓总体信息
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+      COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as cost_basis
+    FROM transactions WHERE fund_id = ?
+  `).get(id) as any;
+  const holdingShares = row.holding_shares;
+  const totalCost = row.cost_basis;
+  const costNav = holdingShares > 0 ? totalCost / holdingShares : 0;
+  const overallLosing = costNav > nav;
+
+  // === 底仓 vs 活仓分离（FIFO：最早的份额为底仓，其余为活仓）===
+  const basePositionPct = fund.base_position_pct ?? 30;
+  const baseShares = r4(holdingShares * basePositionPct / 100);
+  const swingShares = r4(holdingShares - baseShares);
+
+  // FIFO 分离：前 baseShares 份为底仓，之后为活仓
+  let baseRemain = baseShares;
+  let baseCost = 0;
+  type BuyEntry = typeof unpairedBuys[0] & { zone: 'base' | 'swing'; swingShares: number };
+  const taggedBuys: BuyEntry[] = [];
+  for (const buy of unpairedBuys) {
+    if (baseRemain >= buy.remainShares - 0.001) {
+      // 整笔归入底仓
+      taggedBuys.push({ ...buy, zone: 'base', swingShares: 0 });
+      baseCost += buy.remainShares * buy.price;
+      baseRemain -= buy.remainShares;
+    } else if (baseRemain > 0.001) {
+      // 跨区：部分底仓 + 部分活仓
+      const swPart = r4(buy.remainShares - baseRemain);
+      taggedBuys.push({ ...buy, zone: 'swing', swingShares: swPart });
+      baseCost += baseRemain * buy.price;
+      baseRemain = 0;
+    } else {
+      // 全部归入活仓
+      taggedBuys.push({ ...buy, zone: 'swing', swingShares: buy.remainShares });
+    }
+  }
+  const baseCostNav = baseShares > 0 ? r4(baseCost / baseShares) : 0;
+
+  // === 活仓卖出建议（只卖活仓，利润归入底仓降成本）===
+  type Suggestion = {
+    direction: 'sell' | 'buy';
+    txId: number; date: string; refPrice: number; shares: number;
+    opShares: number; keepShares: number;
+    profit: number; action: string; reason: string;
+  };
+  const suggestions: Suggestion[] = [];
+
+  // 按盈利率从高到低排序，优先卖利润最大的（贪心：最大化底仓降成本）
+  const swingBuys = taggedBuys
+    .filter(b => b.swingShares > 0.001 && b.profitPct > 0)
+    .sort((a, b) => b.profitPct - a.profitPct);
+
+  for (const buy of swingBuys) {
+    const availShares = buy.swingShares;
+    // 活仓盈利 → 积极卖出，利润越高越激进
+    let sellRatio: number, reason: string;
+    const profitPerShare = r4(nav - buy.price);
+    const estProfit = r4(availShares * profitPerShare);
+    const costDropEst = baseShares > 0 ? r4(estProfit / baseShares) : 0;
+
+    if (buy.profitPct >= 5) {
+      sellRatio = 1.0;
+      reason = `活仓盈利+${buy.profitPct.toFixed(1)}%，全部卖出`;
+    } else if (buy.profitPct >= 3) {
+      sellRatio = 0.9;
+      reason = `活仓盈利+${buy.profitPct.toFixed(1)}%，卖出90%锁利`;
+    } else if (buy.profitPct >= 1) {
+      sellRatio = 0.8;
+      reason = `活仓盈利+${buy.profitPct.toFixed(1)}%，卖出80%赚差价`;
+    } else {
+      // 0~1% 微利，也积极卖出（积少成多降成本）
+      sellRatio = 0.6;
+      reason = `活仓微利+${buy.profitPct.toFixed(1)}%，卖出60%积累降成本`;
+    }
+
+    const opShares = r4(availShares * sellRatio);
+    const keepShares = r4(availShares - opShares);
+    const profit = Math.round(opShares * profitPerShare * 100) / 100;
+    const actualCostDrop = baseShares > 0 ? r4(profit / baseShares) : 0;
+    if (opShares > 0.001) {
+      reason += `，底仓成本降${actualCostDrop.toFixed(4)}`;
+      suggestions.push({
+        direction: 'sell', txId: buy.id, date: buy.date, refPrice: buy.price,
+        shares: availShares, opShares, keepShares, profit,
+        action: sellRatio >= 1 ? '全部卖出' : `卖出${Math.round(sellRatio * 100)}%`,
+        reason,
+      });
+    }
+  }
+
+  // === 买入建议（低价买回 → 扩充活仓，为下次卖出降成本做准备）===
+  for (const sell of unpairedSells) {
+    if (sell.spreadPct <= 0) continue;
+    let buyRatio: number, reason: string;
+
+    // 买回逻辑服务于降成本目标：
+    // 低位买回 → 增加活仓 → 等涨后卖出 → 利润降低底仓成本
+    if (sell.spreadPct >= 5) {
+      buyRatio = 1.0;
+      reason = `${sell.date}以${sell.price.toFixed(4)}卖出，现价低${sell.spreadPct.toFixed(1)}%，全部买回充入活仓`;
+    } else if (sell.spreadPct >= 2) {
+      buyRatio = 0.7;
+      reason = `${sell.date}以${sell.price.toFixed(4)}卖出，现价低${sell.spreadPct.toFixed(1)}%，买回70%补充活仓`;
+    } else {
+      buyRatio = 0.5;
+      reason = `${sell.date}以${sell.price.toFixed(4)}卖出，现价低${sell.spreadPct.toFixed(1)}%，买回50%补充活仓`;
+    }
+
+    const opShares = r4(sell.remainShares * buyRatio);
+    const keepShares = r4(sell.remainShares - opShares);
+    const profit = Math.round(opShares * (sell.price - nav) * 100) / 100;
+    const investAmount = Math.round(opShares * nav * 100) / 100;
+    // 买回后潜在降成本空间：等涨回卖出价时可赚的利润
+    const potentialDrop = baseShares > 0 ? r4(profit / baseShares) : 0;
+    if (opShares > 0.001) {
+      reason += `，回涨后可降底仓成本${potentialDrop.toFixed(4)}`;
+      suggestions.push({
+        direction: 'buy', txId: sell.id, date: sell.date, refPrice: sell.price,
+        shares: sell.remainShares, opShares, keepShares, profit,
+        action: buyRatio >= 1 ? `全部买回（¥${investAmount}）` : `买回${Math.round(buyRatio * 100)}%（¥${investAmount}）`,
+        reason,
+      });
+    }
+  }
+
+  // === 下跌补仓策略：净值低于成本时生成网格买入 + 回弹卖出降成本计划 ===
+  type DipLevel = {
+    level: number;           // 档位 1,2,3...
+    nav: number;             // 买入净值
+    dropPct: number;         // 相对当前净值跌幅 %
+    amount: number;          // 建议买入金额
+    shares: number;          // 买入份额
+    newCostNav: number;      // 补仓后整体成本
+    costReduction: number;   // 成本降低幅度
+    reason: string;
+    // 回弹预估：如果买入后涨回某价位卖出，可降底仓成本多少
+    rebounds: { targetNav: number; targetLabel: string; sellProfit: number; baseCostDrop: number }[];
+  };
+  type DipStrategy = {
+    enabled: boolean;
+    currentLossPct: number;
+    dropFromCost: number;     // 当前净值距成本跌幅 %
+    levels: DipLevel[];
+    totalPlan: { totalAmount: number; newCostNav: number; totalCostReduction: number };
+    outlook: string;
+  };
+
+  let dipStrategy: DipStrategy = { enabled: false, currentLossPct: 0, dropFromCost: 0, levels: [], totalPlan: { totalAmount: 0, newCostNav: 0, totalCostReduction: 0 }, outlook: '' };
+
+  if (nav < costNav && costNav > 0 && holdingShares > 0) {
+    // 获取历史数据计算 ATR 和支撑位
+    let atr = 0;
+    let support = 0;
+    let ma5 = nav, ma10 = nav, ma20 = nav;
+    if (fund.code) {
+      const navHistory = await fetchNavHistory(fund.code, 60);
+      const navValues = navHistory.map(p => p.nav);
+      if (navValues.length >= 5) {
+        atr = calcATR(navValues);
+        const sr = findSupportResistance(navValues);
+        support = sr.support;
+        const maCalc = (p: number) => { const s = navValues.slice(-p); return s.reduce((a, b) => a + b, 0) / s.length; };
+        ma5 = maCalc(5); ma10 = maCalc(10); ma20 = navValues.length >= 20 ? maCalc(20) : maCalc(Math.min(navValues.length, 10));
+      }
+    }
+
+    const lossPct = ((costNav - nav) / costNav) * 100;
+    const atrPct = nav > 0 && atr > 0 ? (atr / nav) * 100 : 1;
+    // 基础补仓金额：持仓市值的3-5%，最低300
+    const baseAmount = Math.max(Math.round(holdingShares * nav * 0.04 / 100) * 100, 300);
+
+    const levels: DipLevel[] = [];
+    let cumShares = holdingShares;
+    let cumCost = totalCost;
+
+    // 回弹目标价位
+    const reboundTargets = [
+      { targetNav: r4(costNav), targetLabel: '成本价' },
+      { targetNav: r4(costNav * 0.98), targetLabel: '成本-2%' },
+      { targetNav: r4(nav * (1 + atrPct * 2 / 100)), targetLabel: `+${(atrPct * 2).toFixed(1)}%` },
+    ];
+
+    // 第0档：当前价位补仓
+    const genLevel = (level: number, levelNav: number, dropPct: number, multiplier: number, reason: string) => {
+      const amount = Math.round(baseAmount * multiplier / 100) * 100 || 300;
+      const shares = levelNav > 0 ? r4(amount / levelNav) : 0;
+      const newCumShares = cumShares + shares;
+      const newCumCost = cumCost + amount;
+      const newCostNav = newCumShares > 0 ? r4(newCumCost / newCumShares) : costNav;
+      const costReduction = r4(costNav - newCostNav);
+
+      // 回弹预估：买入这些份额后，涨到目标价卖出赚的利润可以降底仓成本
+      const rebounds = reboundTargets
+        .filter(t => t.targetNav > levelNav)
+        .map(t => {
+          const sellProfit = Math.round(shares * (t.targetNav - levelNav) * 100) / 100;
+          const baseCostDropVal = baseShares > 0 ? r4(sellProfit / baseShares) : 0;
+          return { targetNav: t.targetNav, targetLabel: t.targetLabel, sellProfit, baseCostDrop: baseCostDropVal };
+        });
+
+      const l: DipLevel = { level, nav: levelNav, dropPct, amount, shares, newCostNav, costReduction, reason, rebounds };
+      cumShares = newCumShares;
+      cumCost = newCumCost;
+      return l;
+    };
+
+    // 档位1：当前价位
+    levels.push(genLevel(1, nav, 0, 1, `当前净值已低于成本${lossPct.toFixed(1)}%，轻仓补入`));
+
+    // 档位2：再跌1个ATR
+    const nav2 = r4(nav * (1 - atrPct / 100));
+    levels.push(genLevel(2, nav2, atrPct, 1.5, `再跌${atrPct.toFixed(1)}%至${nav2.toFixed(4)}，加大补仓`));
+
+    // 档位3：再跌2个ATR
+    const nav3 = r4(nav * (1 - atrPct * 2 / 100));
+    levels.push(genLevel(3, nav3, atrPct * 2, 2, `跌${(atrPct * 2).toFixed(1)}%至${nav3.toFixed(4)}，重仓补入`));
+
+    // 档位4：支撑位（如果比nav3更低）
+    if (support > 0 && support < nav3 * 0.998) {
+      const dropToSupport = ((nav - support) / nav) * 100;
+      levels.push(genLevel(4, support, dropToSupport, 2.5, `跌至支撑位${support.toFixed(4)}（-${dropToSupport.toFixed(1)}%），关键位置重仓`));
+    }
+
+    // 档位5：MA20下方（如果MA20低于当前净值，说明均线在下方，可参考）
+    if (ma20 > 0 && ma20 < nav * 0.995 && ma20 < (levels[levels.length - 1]?.nav ?? nav) * 0.998) {
+      const dropToMa20 = ((nav - ma20) / nav) * 100;
+      levels.push(genLevel(5, r4(ma20), dropToMa20, 2, `跌至MA20（${ma20.toFixed(4)}），均线支撑补仓`));
+    }
+
+    const totalAmount = levels.reduce((s, l) => s + l.amount, 0);
+    const totalNewShares = levels.reduce((s, l) => s + l.shares, 0);
+    const finalCostNav = (holdingShares + totalNewShares) > 0 ? r4((totalCost + totalAmount) / (holdingShares + totalNewShares)) : costNav;
+
+    // 展望
+    let outlook = '';
+    if (lossPct <= 3) {
+      outlook = `浮亏${lossPct.toFixed(1)}%，接近回本。小额补仓即可有效降低成本，等待净值回升。`;
+    } else if (lossPct <= 8) {
+      outlook = `浮亏${lossPct.toFixed(1)}%，建议按网格分档补仓。每档买入后归入活仓，回弹即卖出锁利，利润持续降低底仓成本。`;
+    } else {
+      outlook = `浮亏${lossPct.toFixed(1)}%较深，需耐心分批布局。严格按档位执行，不要一次性投入。每次回弹卖出活仓利润都在蚕食底仓成本。`;
+    }
+
+    dipStrategy = {
+      enabled: true,
+      currentLossPct: Math.round(lossPct * 100) / 100,
+      dropFromCost: Math.round(lossPct * 100) / 100,
+      levels,
+      totalPlan: { totalAmount, newCostNav: finalCostNav, totalCostReduction: r4(costNav - finalCostNav) },
+      outlook,
+    };
+  }
+
+  // === 计算执行后的影响 ===
+  const sellSugs = suggestions.filter(s => s.direction === 'sell');
+  const buySugs = suggestions.filter(s => s.direction === 'buy');
+  const totalSellShares = sellSugs.reduce((s, t) => s + t.opShares, 0);
+  const totalBuyShares = buySugs.reduce((s, t) => s + t.opShares, 0);
+  const totalSellProfit = sellSugs.reduce((s, t) => s + t.profit, 0);
+  const totalBuyProfit = buySugs.reduce((s, t) => s + t.profit, 0);
+  const totalProfit = totalSellProfit + totalBuyProfit;
+
+  const newHoldingShares = holdingShares - totalSellShares + totalBuyShares;
+  const sellCostReduction = sellSugs.reduce((s, t) => s + t.opShares * t.refPrice, 0);
+  const buyCostAddition = totalBuyShares * nav;
+  const newTotalCost = totalCost - sellCostReduction + buyCostAddition;
+  const newCostNav = newHoldingShares > 0 ? newTotalCost / newHoldingShares : 0;
+
+  // 底仓有效成本 = (底仓原始成本 - 波段卖出利润) / 底仓份额
+  // 波段利润直接补贴底仓，持续降低底仓持有成本
+  const newBaseCost = baseCost - totalSellProfit;
+  const newBaseCostNav = baseShares > 0 ? r4(newBaseCost / baseShares) : 0;
+  const baseCostDrop = r4(baseCostNav - newBaseCostNav);
+
+  res.json({
+    nav,
+    costNav: r4(costNav),
+    holdingShares: r4(holdingShares),
+    basePosition: {
+      pct: basePositionPct,
+      shares: baseShares,
+      maxSellable: swingShares,
+      baseCostNav,
+      newBaseCostNav,
+      baseCostDrop,
+    },
+    unpairedBuys,
+    unpairedSells,
+    suggestions,
+    dipStrategy,
+    impact: {
+      totalProfit: Math.round(totalProfit * 100) / 100,
+      sellProfit: Math.round(totalSellProfit * 100) / 100,
+      buyProfit: Math.round(totalBuyProfit * 100) / 100,
+      totalSellShares: r4(totalSellShares),
+      totalBuyShares: r4(totalBuyShares),
+      newHoldingShares: r4(newHoldingShares),
+      newCostNav: r4(newCostNav),
+      costReduction: r4(costNav - newCostNav),
+    },
+  });
 });
 
 export default router;

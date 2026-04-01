@@ -67,6 +67,40 @@ router.get('/:code/latest', async (req: Request, res: Response) => {
   }
 });
 
+// 批量获取所有基金的实时估值
+router.get('/estimate/all', async (_req: Request, res: Response) => {
+  try {
+    const funds = db.prepare("SELECT id, code FROM funds WHERE code != '' AND code IS NOT NULL AND deleted_at IS NULL").all() as any[];
+    const results: Record<number, { gsz: number; gszzl: number; gztime: string; dwjz: number; name: string }> = {};
+
+    await Promise.all(funds.map(async (f: any) => {
+      try {
+        const gzRes = await fetch(`https://fundgz.1234567.com.cn/js/${f.code}.js?rt=${Date.now()}`, {
+          headers: { 'Referer': 'https://fund.eastmoney.com/' },
+        });
+        if (gzRes.ok) {
+          const text = await gzRes.text();
+          const json = text.replace(/^jsonpgz\(/, '').replace(/\);?\s*$/, '');
+          const data = JSON.parse(json);
+          if (data.gsz) {
+            results[f.id] = {
+              gsz: parseFloat(data.gsz),
+              gszzl: data.gszzl ? parseFloat(data.gszzl) : 0,
+              gztime: data.gztime || '',
+              dwjz: parseFloat(data.dwjz),
+              name: data.name || '',
+            };
+          }
+        }
+      } catch { /* skip failed */ }
+    }));
+
+    res.json(results);
+  } catch (err: any) {
+    res.status(500).json({ error: '批量估值失败: ' + err.message });
+  }
+});
+
 // 获取指定日期净值
 router.get('/:code/date/:date', async (req: Request, res: Response) => {
   const { code, date } = req.params;

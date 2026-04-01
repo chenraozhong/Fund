@@ -39,7 +39,9 @@ export interface Fund {
   market_nav: number;
   stop_profit_pct: number;
   stop_loss_pct: number;
+  base_position_pct: number;
   created_at: string;
+  holding_shares: number;
   current_value: number;
   total_cost: number;
   gain: number;
@@ -196,6 +198,20 @@ export interface StrategyResult {
     pyramidLevels: { nav: number; action: string; amount: number; reason: string }[];
     holdingDays: number; costEfficiency: number;
   };
+  shortTermPlan: {
+    triggers: { condition: string; action: string; amount: number; nav: number }[];
+    stopLossNav: number; takeProfitNav: number; outlook: string;
+  };
+  longTermPlan: {
+    monthlyBase: number;
+    smartDCA: { condition: string; multiplier: number; amount: number }[];
+    targetCostNav: number; targetGainPct: number; horizonMonths: number; outlook: string;
+  };
+  recoveryPlan: {
+    isLosing: boolean; currentLoss: number; currentLossPct: number; breakevenNav: number;
+    scenarios: { label: string; investAmount: number; newCostNav: number; newShares: number; breakevenChangePct: number; estimatedDays: number }[];
+    recommendation: string;
+  };
   summary: {
     verdict: string; verdictColor: string; oneLiner: string; keyPoints: string[];
   };
@@ -204,7 +220,7 @@ export interface StrategyResult {
 }
 
 export interface FundDetail {
-  fund: { id: number; name: string; color: string; code: string; market_nav: number; stop_profit_pct: number; stop_loss_pct: number; created_at: string };
+  fund: { id: number; name: string; color: string; code: string; market_nav: number; stop_profit_pct: number; stop_loss_pct: number; base_position_pct: number; created_at: string };
   positions: Position[];
   transactions: Transaction[];
 }
@@ -213,10 +229,16 @@ export const api = {
   getFunds: () => request<Fund[]>('/funds'),
   createFund: (data: { name: string; color: string; code?: string }) =>
     request<Fund>('/funds', { method: 'POST', body: JSON.stringify(data) }),
-  updateFund: (id: number, data: { name?: string; color?: string; code?: string; market_nav?: number }) =>
+  updateFund: (id: number, data: { name?: string; color?: string; code?: string; market_nav?: number; stop_profit_pct?: number; stop_loss_pct?: number; base_position_pct?: number }) =>
     request<Fund>(`/funds/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteFund: (id: number) =>
     request<void>(`/funds/${id}`, { method: 'DELETE' }),
+  getTrashFunds: () =>
+    request<(Fund & { tx_count: number; deleted_at: string })[]>('/funds/trash/list'),
+  restoreFund: (id: number) =>
+    request<{ success: boolean }>(`/funds/trash/${id}/restore`, { method: 'POST' }),
+  permanentDeleteFund: (id: number) =>
+    request<{ success: boolean }>(`/funds/trash/${id}/permanent`, { method: 'DELETE' }),
 
   getTransactions: (params?: Record<string, string>) => {
     const qs = params ? '?' + new URLSearchParams(params).toString() : '';
@@ -246,6 +268,13 @@ export const api = {
     request<{ success: boolean; gain: number; targetCost: number; targetNav: number }>(`/funds/${id}/gain`, { method: 'POST', body: JSON.stringify({ gain }) }),
   getFundAdvice: (id: number) => request<AiAdvice>(`/ai/funds/${id}/advice`),
   getFundStrategy: (id: number) => request<StrategyResult>(`/strategy/funds/${id}`),
+  getQuickAdvice: (id: number, realtimeNav: number) => request<StrategyResult>(`/strategy/funds/${id}?nav=${realtimeNav}`),
+  getSwingAdvice: (id: number, nav: number) => request<{
+    nav: number; costNav: number; holdingShares: number;
+    unpairedBuys: { id: number; date: string; shares: number; price: number; remainShares: number; profit: number; profitPct: number }[];
+    suggestions: { txId: number; date: string; buyPrice: number; shares: number; sellShares: number; keepShares: number; profit: number; action: string; reason: string }[];
+    impact: { totalProfit: number; totalSellShares: number; newHoldingShares: number; newCostNav: number; costReduction: number };
+  }>(`/strategy/funds/${id}/swing?nav=${nav}`),
 
   importPreview: (text: string) =>
     request<{ funds: ImportPreview[] }>('/import/preview', { method: 'POST', body: JSON.stringify({ text }) }),
@@ -263,6 +292,7 @@ export const api = {
   getPerformance: () => request<PerformanceData>('/stats/performance'),
   getAllocation: () => request<Allocation[]>('/stats/allocation'),
 
+  getEstimateAll: () => request<Record<number, { gsz: number; gszzl: number; gztime: string; dwjz: number; name: string }>>('/nav/estimate/all'),
   getLatestNav: (code: string) => request<NavLatest>(`/nav/${code}/latest`),
   getNavByDate: (code: string, date: string) => request<NavDate>(`/nav/${code}/date/${date}`),
   refreshAllNav: () => request<{ updated: number; total: number; results: { id: number; name: string; code: string; nav: number | null; error?: string }[] }>('/nav/refresh-all', { method: 'POST' }),

@@ -53,6 +53,8 @@ const migrations = [
   'ALTER TABLE funds ADD COLUMN stop_loss_pct REAL DEFAULT 5',
   "ALTER TABLE funds ADD COLUMN code TEXT DEFAULT ''",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_funds_code ON funds(code) WHERE code != ''",
+  "ALTER TABLE funds ADD COLUMN deleted_at TEXT DEFAULT NULL",
+  "ALTER TABLE funds ADD COLUMN base_position_pct REAL DEFAULT 30",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) { /* column/index already exists */ }
