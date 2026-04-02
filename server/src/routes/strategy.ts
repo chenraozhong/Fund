@@ -2045,16 +2045,36 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
     const fundScore = fundamental ? scoreFundamental(fundamental) : { score: 0, highlights: [] };
     const newsScore = scoreNewsSentiment(news);
 
-    // === 3. 多因子预测模型 (v2优化版) ===
+    // === 3. 多因子预测模型 (v4自适应优化版 - 回测竞技场进化) ===
+    // v4核心改进：自适应市场状态检测，趋势市/震荡市/高波动市动态切权重
     const current = navValues[navValues.length - 1];
     const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
 
+    // --- 3z. 市场状态自适应检测 (v4新增) ---
+    // 判断当前处于趋势市、震荡市还是高波动市，动态调整因子权重
+    type ForecastRegime = 'trending' | 'ranging' | 'volatile';
+    let forecastRegime: ForecastRegime = 'ranging';
+    if (navValues.length >= 30) {
+      const ma5v = navValues.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const ma10v = navValues.slice(-10).reduce((a, b) => a + b, 0) / 10;
+      const ma20v = navValues.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const alignedBull = ma5v > ma10v && ma10v > ma20v;
+      const alignedBear = ma5v < ma10v && ma10v < ma20v;
+      if (risk.volatility20d > 30) forecastRegime = 'volatile';
+      else if (alignedBull || alignedBear) forecastRegime = 'trending';
+      else forecastRegime = 'ranging';
+    }
+    // 自适应权重：趋势市加大动量权重，震荡市加大回归权重
+    const adaptTrendW = forecastRegime === 'trending' ? 0.82 : forecastRegime === 'volatile' ? 0.14 : 0.27;
+    const adaptReversionW = forecastRegime === 'trending' ? 0.04 : forecastRegime === 'volatile' ? 0.28 : 0.19;
+    const adaptBBMult = forecastRegime === 'ranging' ? 1.5 : 1.0;
+
     // --- 3a. 趋势动量因子（带衰减权重） ---
     const changes = navValues.slice(-10).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100);
-    // 近期权重更高：d-1权重1.0, d-2权重0.7, d-3权重0.5, d-4权重0.3, d-5权重0.2
-    const decayWeights = [0.2, 0.3, 0.5, 0.7, 1.0];
+    // 近期权重更高（v4微调衰减曲线）
+    const decayWeights = [0.15, 0.25, 0.45, 0.75, 1.0];
     const recentChanges5 = changes.slice(-5);
-    const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.2), 0) / decayWeights.reduce((a, b) => a + b, 0);
+    const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.15), 0) / decayWeights.reduce((a, b) => a + b, 0);
     const mom3d = changes.slice(-3).reduce((a, b) => a + b, 0);
     const mom5d = changes.slice(-5).reduce((a, b) => a + b, 0);
     // 连涨连跌天数（动量持续性）
@@ -2065,50 +2085,52 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
       else break;
     }
     let trendFactor = 0;
-    trendFactor += weightedMom * 0.6;          // 衰减加权动量
-    trendFactor += tech.trendScore * 0.015;    // 趋势评分
-    // 连涨5天以上动量衰减（过热回调概率增大）
-    if (Math.abs(streak) >= 5) trendFactor *= 0.5;
-    else if (Math.abs(streak) >= 3) trendFactor *= 0.8;
+    trendFactor += weightedMom * adaptTrendW;      // v4：自适应动量权重
+    trendFactor += tech.trendScore * 0.015;
+    // v4优化连涨衰减系数（回测进化：5天0.42, 3天0.80）
+    if (Math.abs(streak) >= 5) trendFactor *= 0.42;
+    else if (Math.abs(streak) >= 3) trendFactor *= 0.80;
 
-    // --- 3b. 均值回归因子（分段非线性） ---
+    // --- 3b. 均值回归因子（v4自适应权重） ---
     const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
     const deviationFromMA5 = ((current - tech.ma5) / tech.ma5) * 100;
     let reversionFactor = 0;
-    // MA20：偏离越大回归力越强（平方根非线性）
+    // v4：使用自适应回归权重（趋势市权重极低0.04，震荡市0.19）
     if (Math.abs(deviationFromMA20) > 2) {
       const sign = deviationFromMA20 > 0 ? -1 : 1;
-      reversionFactor += sign * Math.sqrt(Math.abs(deviationFromMA20) - 2) * 0.12;
+      reversionFactor += sign * Math.sqrt(Math.abs(deviationFromMA20) - 2) * adaptReversionW;
     }
     if (Math.abs(deviationFromMA5) > 1.5) {
       const sign = deviationFromMA5 > 0 ? -1 : 1;
       reversionFactor += sign * (Math.abs(deviationFromMA5) - 1.5) * 0.08;
     }
 
-    // --- 3c. RSI因子（分段非线性） ---
+    // --- 3c. RSI因子（v4优化阈值+背离增强） ---
     let rsiFactor = 0;
-    if (tech.rsi14 > 80) rsiFactor = -(tech.rsi14 - 80) * 0.08;
-    else if (tech.rsi14 > 65) rsiFactor = -(tech.rsi14 - 65) * 0.025;
-    else if (tech.rsi14 < 20) rsiFactor = (20 - tech.rsi14) * 0.08;
-    else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.025;
-    // RSI背离检测：价格新高但RSI未新高→顶背离
-    if (navValues.length >= 10) {
-      const nav5ago = navValues[navValues.length - 6];
-      const rsi5ago = calcRSI(navValues.slice(0, -5), 14);
-      if (current > nav5ago && tech.rsi14 < rsi5ago) rsiFactor -= 0.15; // 顶背离
-      if (current < nav5ago && tech.rsi14 > rsi5ago) rsiFactor += 0.15; // 底背离
+    // v4优化阈值（回测进化：overbought=59, oversold=35, extreme_high=79, extreme_low=19）
+    if (tech.rsi14 > 79) rsiFactor = -(tech.rsi14 - 79) * 0.08;
+    else if (tech.rsi14 > 59) rsiFactor = -(tech.rsi14 - 59) * 0.036;
+    else if (tech.rsi14 < 19) rsiFactor = (19 - tech.rsi14) * 0.08;
+    else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.036;
+    // v4增强RSI背离检测（回测进化：lookback=10, weight=0.21）
+    if (navValues.length >= 12) {
+      const navLookback = navValues[navValues.length - 11];
+      const rsiLookback = calcRSI(navValues.slice(0, -10), 14);
+      if (current > navLookback && tech.rsi14 < rsiLookback) rsiFactor -= 0.21; // 顶背离（v4: 0.15→0.21）
+      if (current < navLookback && tech.rsi14 > rsiLookback) rsiFactor += 0.21; // 底背离
     }
 
-    // --- 3d. MACD信号因子 ---
+    // --- 3d. MACD信号因子（v4优化金叉boost） ---
     let macdFactor = 0;
     const hist = tech.macd.histogram;
-    if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.15;
-    else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.15;
-    // 金叉/死叉
+    // v4优化MACD基础权重（回测进化：0.15→0.18）
+    if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.18;
+    else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.18;
+    // v4优化金叉/死叉boost（回测进化：0.3→0.34）
     if (navValues.length >= 2) {
       const prevMacd = calcMACD(navValues.slice(0, -1));
-      if (prevMacd.histogram <= 0 && hist > 0) macdFactor += 0.3;
-      if (prevMacd.histogram >= 0 && hist < 0) macdFactor -= 0.3;
+      if (prevMacd.histogram <= 0 && hist > 0) macdFactor += 0.34;
+      if (prevMacd.histogram >= 0 && hist < 0) macdFactor -= 0.34;
     }
     // MACD柱状图加速/减速（二阶导数）
     if (navValues.length >= 3) {
@@ -2116,17 +2138,18 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
       const prevMacd2 = calcMACD(navValues.slice(0, -1));
       const accel = hist - prevMacd2.histogram;
       const prevAccel = prevMacd2.histogram - prev2Macd.histogram;
-      if (accel > 0 && prevAccel > 0) macdFactor += 0.1;  // 红柱加速
-      if (accel < 0 && prevAccel < 0) macdFactor -= 0.1;  // 绿柱加速
+      if (accel > 0 && prevAccel > 0) macdFactor += 0.1;
+      if (accel < 0 && prevAccel < 0) macdFactor -= 0.1;
     }
 
-    // --- 3e. 布林带因子 ---
+    // --- 3e. 布林带因子（v4自适应倍率） ---
     let bbFactor = 0;
     const pctB = tech.bollingerBands.percentB;
-    if (pctB > 95) bbFactor = -0.35;
-    else if (pctB > 80) bbFactor = -(pctB - 80) * 0.015;
-    else if (pctB < 5) bbFactor = 0.35;
-    else if (pctB < 20) bbFactor = (20 - pctB) * 0.015;
+    // v4优化权重（回测进化：0.015→0.019）
+    if (pctB > 95) bbFactor = -0.35 * adaptBBMult;
+    else if (pctB > 80) bbFactor = -(pctB - 80) * 0.019 * adaptBBMult;
+    else if (pctB < 5) bbFactor = 0.35 * adaptBBMult;
+    else if (pctB < 20) bbFactor = (20 - pctB) * 0.019 * adaptBBMult;
     // 布林带收窄→波动率即将扩大，顺趋势加权
     if (tech.bollingerBands.width < 3) {
       bbFactor += trendFactor > 0 ? 0.1 : trendFactor < 0 ? -0.1 : 0;
@@ -2135,83 +2158,74 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
     // --- 3f. 消息面因子 ---
     const newsFactor = newsScore.score * 0.008;
 
-    // --- 3g. 市场环境因子 ---
+    // --- 3g. 市场环境因子（v4增强权重） ---
     let marketFactor = 0;
     if (marketCtx) {
       const shIdx = marketCtx.marketIndices.find((i: any) => i.name === '上证指数');
       const shChangePct = shIdx?.changePct || 0;
-      marketFactor += shChangePct * 0.08;
-      if (marketCtx.marketScore > 20) marketFactor += 0.08;
-      else if (marketCtx.marketScore < -20) marketFactor -= 0.08;
+      // v4优化市场权重（回测进化：0.08→0.11）
+      marketFactor += shChangePct * 0.11;
+      if (marketCtx.marketScore > 20) marketFactor += 0.10;
+      else if (marketCtx.marketScore < -20) marketFactor -= 0.10;
     }
 
     // --- 3h. 周内季节性因子 ---
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const dayOfWeek = tomorrow.getDay(); // 0=Sun, 1=Mon...5=Fri
+    const dayOfWeek = tomorrow.getDay();
     let seasonalFactor = 0;
-    // A股统计规律：周一偏弱，周五偏弱（获利了结），周二三四相对较强
     if (dayOfWeek === 1) seasonalFactor = -0.03;
     else if (dayOfWeek === 2 || dayOfWeek === 3) seasonalFactor = 0.02;
     else if (dayOfWeek === 5) seasonalFactor = -0.02;
-    // 月末/季末效应：机构调仓，最后3个交易日偏弱
     const todayDate = new Date();
     const daysInMonth = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0).getDate();
     if (todayDate.getDate() >= daysInMonth - 2) seasonalFactor -= 0.03;
-    // 月初效应：新资金入场偏强
     if (todayDate.getDate() <= 3) seasonalFactor += 0.02;
 
-    // --- 3i. 支撑/阻力位接近因子 (v3新增) ---
+    // --- 3i. 支撑/阻力位接近因子 ---
     let srFactor = 0;
     if (tech.support > 0 && tech.resistance > 0) {
       const distToSupport = ((current - tech.support) / current) * 100;
       const distToResist = ((tech.resistance - current) / current) * 100;
-      // 接近支撑位→反弹概率增大
       if (distToSupport < 1.0 && distToSupport >= 0) srFactor += 0.2;
       else if (distToSupport < 2.0 && distToSupport >= 0) srFactor += 0.1;
-      // 跌破支撑位→加速下行
       if (distToSupport < 0) srFactor -= 0.15;
-      // 接近阻力位→回调概率增大
       if (distToResist < 1.0 && distToResist >= 0) srFactor -= 0.15;
       else if (distToResist < 2.0 && distToResist >= 0) srFactor -= 0.08;
-      // 突破阻力位→加速上行
       if (distToResist < 0) srFactor += 0.2;
     }
 
-    // --- 3j. 跨时间框架确认因子 (v3新增) ---
+    // --- 3j. 跨时间框架确认因子 ---
     let crossTfFactor = 0;
-    // 短期(3日)和中期(10日)趋势方向一致→信号加强
     const mom10d = navValues.length >= 11 ? navValues.slice(-11).reduce((s, v, i, a) => i === 0 ? 0 : s + ((v - a[i-1]) / a[i-1]) * 100, 0) : 0;
-    if (mom3d > 0 && mom10d > 0 && tech.trendScore > 0) crossTfFactor = 0.12; // 三框架共振看多
-    else if (mom3d < 0 && mom10d < 0 && tech.trendScore < 0) crossTfFactor = -0.12; // 三框架共振看空
-    else if ((mom3d > 0) !== (mom10d > 0)) crossTfFactor = 0; // 短中期分歧→中性
+    if (mom3d > 0 && mom10d > 0 && tech.trendScore > 0) crossTfFactor = 0.12;
+    else if (mom3d < 0 && mom10d < 0 && tech.trendScore < 0) crossTfFactor = -0.12;
+    else if ((mom3d > 0) !== (mom10d > 0)) crossTfFactor = 0;
 
-    // --- 3k. 缺口回补因子 (v3新增) ---
+    // --- 3k. 缺口回补因子 ---
     let gapFactor = 0;
     if (changes.length >= 2) {
       const lastChange = changes[changes.length - 1];
-      // 大幅跳空（>1.5%）倾向回补
       if (Math.abs(lastChange) > 1.5) {
-        gapFactor = -lastChange * 0.15; // 反向回补力
+        gapFactor = -lastChange * 0.15;
       }
     }
 
-    // --- 3l. 资金流向因子 (v3新增) ---
+    // --- 3l. 资金流向因子 ---
     let capitalFlowFactor = 0;
     if (capitalFlow) {
-      capitalFlowFactor = capitalFlow.flowScore * 0.005; // -0.5 ~ +0.5
-      // 板块资金流额外加权（更直接相关）
+      capitalFlowFactor = capitalFlow.flowScore * 0.005;
       if (capitalFlow.sector) {
         if (capitalFlow.sector.mainNetInflow > 5) capitalFlowFactor += 0.1;
         else if (capitalFlow.sector.mainNetInflow < -5) capitalFlowFactor -= 0.1;
       }
     }
 
-    // --- 3m. 波动率调整因子 ---
-    // 高波动率环境下均值回归和布林带权重提升，趋势权重降低
-    const volAdj = risk.volatility20d > 25 ? 0.7 : risk.volatility20d > 15 ? 0.85 : 1.0;
+    // --- 3m. 波动率调整因子（v4优化阈值和系数） ---
+    // v4：阈值26%（原25%），系数0.60（原0.7）— 回测进化结果
+    const volAdj = risk.volatility20d > 26 ? 0.60 : risk.volatility20d > 15 ? 0.85 : 1.0;
     trendFactor *= volAdj;
-    reversionFactor *= (2 - volAdj); // 高波动时回归力更强
+    reversionFactor *= (2 - volAdj);
 
     // === 4. 综合预测（v3加权融合） ===
     const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + seasonalFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor;
@@ -2467,11 +2481,25 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
         const current = navValues[navValues.length - 1];
         const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
 
-        // 简化版多因子预测（与完整版相同算法）
+        // v4自适应多因子预测（与完整版相同算法）
         const changes = navValues.slice(-10).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100);
-        const decayWeights = [0.2, 0.3, 0.5, 0.7, 1.0];
+
+        // v4自适应市场状态检测
+        let batchRegime: 'trending' | 'ranging' | 'volatile' = 'ranging';
+        if (navValues.length >= 30) {
+          const bma5 = navValues.slice(-5).reduce((a, b) => a + b, 0) / 5;
+          const bma10 = navValues.slice(-10).reduce((a, b) => a + b, 0) / 10;
+          const bma20 = navValues.slice(-20).reduce((a, b) => a + b, 0) / 20;
+          if (risk.volatility20d > 30) batchRegime = 'volatile';
+          else if ((bma5 > bma10 && bma10 > bma20) || (bma5 < bma10 && bma10 < bma20)) batchRegime = 'trending';
+        }
+        const bTrendW = batchRegime === 'trending' ? 0.82 : batchRegime === 'volatile' ? 0.14 : 0.27;
+        const bRevW = batchRegime === 'trending' ? 0.04 : batchRegime === 'volatile' ? 0.28 : 0.19;
+        const bBBMult = batchRegime === 'ranging' ? 1.5 : 1.0;
+
+        const decayWeights = [0.15, 0.25, 0.45, 0.75, 1.0];
         const recentChanges5 = changes.slice(-5);
-        const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.2), 0) / decayWeights.reduce((a, b) => a + b, 0);
+        const weightedMom = recentChanges5.reduce((s, c, i) => s + c * (decayWeights[i] || 0.15), 0) / decayWeights.reduce((a, b) => a + b, 0);
         const mom3d = changes.slice(-3).reduce((a, b) => a + b, 0);
         let streak = 0;
         for (let i = changes.length - 1; i >= 1; i--) {
@@ -2479,44 +2507,43 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
           else if (changes[i] < 0 && streak <= 0) streak--;
           else break;
         }
-        let trendFactor = weightedMom * 0.6 + tech.trendScore * 0.015;
-        if (Math.abs(streak) >= 5) trendFactor *= 0.5;
-        else if (Math.abs(streak) >= 3) trendFactor *= 0.8;
+        let trendFactor = weightedMom * bTrendW + tech.trendScore * 0.015;
+        if (Math.abs(streak) >= 5) trendFactor *= 0.42;
+        else if (Math.abs(streak) >= 3) trendFactor *= 0.80;
 
         const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
         const deviationFromMA5 = ((current - tech.ma5) / tech.ma5) * 100;
         let reversionFactor = 0;
-        if (Math.abs(deviationFromMA20) > 2) reversionFactor += (deviationFromMA20 > 0 ? -1 : 1) * Math.sqrt(Math.abs(deviationFromMA20) - 2) * 0.12;
+        if (Math.abs(deviationFromMA20) > 2) reversionFactor += (deviationFromMA20 > 0 ? -1 : 1) * Math.sqrt(Math.abs(deviationFromMA20) - 2) * bRevW;
         if (Math.abs(deviationFromMA5) > 1.5) reversionFactor += (deviationFromMA5 > 0 ? -1 : 1) * (Math.abs(deviationFromMA5) - 1.5) * 0.08;
 
         let rsiFactor = 0;
-        if (tech.rsi14 > 80) rsiFactor = -(tech.rsi14 - 80) * 0.08;
-        else if (tech.rsi14 > 65) rsiFactor = -(tech.rsi14 - 65) * 0.025;
-        else if (tech.rsi14 < 20) rsiFactor = (20 - tech.rsi14) * 0.08;
-        else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.025;
+        if (tech.rsi14 > 79) rsiFactor = -(tech.rsi14 - 79) * 0.08;
+        else if (tech.rsi14 > 59) rsiFactor = -(tech.rsi14 - 59) * 0.036;
+        else if (tech.rsi14 < 19) rsiFactor = (19 - tech.rsi14) * 0.08;
+        else if (tech.rsi14 < 35) rsiFactor = (35 - tech.rsi14) * 0.036;
 
         let macdFactor = 0;
         const hist = tech.macd.histogram;
-        if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.15;
-        else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.15;
+        if (hist > 0 && tech.macd.dif > tech.macd.dea) macdFactor = 0.18;
+        else if (hist < 0 && tech.macd.dif < tech.macd.dea) macdFactor = -0.18;
 
         let bbFactor = 0;
         const pctB = tech.bollingerBands.percentB;
-        if (pctB > 95) bbFactor = -0.35;
-        else if (pctB > 80) bbFactor = -(pctB - 80) * 0.015;
-        else if (pctB < 5) bbFactor = 0.35;
-        else if (pctB < 20) bbFactor = (20 - pctB) * 0.015;
+        if (pctB > 95) bbFactor = -0.35 * bBBMult;
+        else if (pctB > 80) bbFactor = -(pctB - 80) * 0.019 * bBBMult;
+        else if (pctB < 5) bbFactor = 0.35 * bBBMult;
+        else if (pctB < 20) bbFactor = (20 - pctB) * 0.019 * bBBMult;
 
         const newsFactor = newsScore.score * 0.008;
         let marketFactor = 0;
         if (marketCtx) {
           const shIdx = marketCtx.marketIndices.find((i: any) => i.name === '上证指数');
-          marketFactor += (shIdx?.changePct || 0) * 0.08;
-          if (marketCtx.marketScore > 20) marketFactor += 0.08;
-          else if (marketCtx.marketScore < -20) marketFactor -= 0.08;
+          marketFactor += (shIdx?.changePct || 0) * 0.11;
+          if (marketCtx.marketScore > 20) marketFactor += 0.10;
+          else if (marketCtx.marketScore < -20) marketFactor -= 0.10;
         }
 
-        // v3 新增因子
         let srFactor = 0;
         if (tech.support > 0 && tech.resistance > 0) {
           const distToSupport = ((current - tech.support) / current) * 100;
@@ -2539,7 +2566,6 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
           gapFactor = -changes[changes.length - 1] * 0.15;
         }
 
-        // 资金流向因子
         let capitalFlowFactor = 0;
         if (cfData) {
           capitalFlowFactor = cfData.flowScore * 0.005;
@@ -2549,7 +2575,7 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
           }
         }
 
-        const volAdj = risk.volatility20d > 25 ? 0.7 : risk.volatility20d > 15 ? 0.85 : 1.0;
+        const volAdj = risk.volatility20d > 26 ? 0.60 : risk.volatility20d > 15 ? 0.85 : 1.0;
         trendFactor *= volAdj;
         reversionFactor *= (2 - volAdj);
 
