@@ -150,207 +150,114 @@ export default function Dashboard() {
           </div>
           {(decisionsLoading || forecastsLoading) && <span className="text-xs text-gray-400 animate-pulse">{decisionsLoading ? '决策分析中...' : '预测中...'}</span>}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 text-left text-xs text-gray-400 uppercase">
-                <th className="pb-2 pr-3">基金</th>
-                <th className="pb-2 pr-3 text-right">实时估值/净值</th>
-                <th className="pb-2 pr-3 text-right">涨跌幅</th>
-                <th className="pb-2 pr-3 text-right">成本净值</th>
-                <th className="pb-2 pr-3 text-right">持仓市值</th>
-                <th className="pb-2 pr-3 text-right">浮动盈亏</th>
-                <th className="pb-2 pr-3 text-center">明日预测</th>
-                <th className="pb-2 pr-3 text-center">操作建议</th>
-                <th className="pb-2 text-right">建议金额</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {decisions.length > 0 ? decisions.map(d => {
-                const est = estimates[d.fundId]
-                const fc = forecasts[d.fundId]
-                const pos = d.position
-                const costNav = pos?.costNav ?? 0
-                const gainPct = pos?.gainPct ?? 0
-                const mktValue = pos?.marketValue ?? 0
-                const isExpanded = expandedId === d.fundId
-                const published = isNavPublished(est)
-                // 显示净值或估值
-                const displayNav = published ? est.officialNav : (est ? est.gsz : (d.nav > 0 ? d.nav : 0))
-                const displayChangePct = published
-                  ? (est.prevNav > 0 ? ((est.officialNav - est.prevNav) / est.prevNav) * 100 : 0)
-                  : (est ? est.gszzl : 0)
-                return (
-                  <tr key={d.fundId} className="hover:bg-gray-50/50 cursor-pointer transition-colors group" onClick={() => setExpandedId(isExpanded ? null : d.fundId)}>
-                    <td className="py-2.5 pr-3">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                        <div>
-                          <span className="font-medium text-gray-900">{d.name}</span>
-                          {d.code && <span className="text-xs text-gray-400 ml-1">{d.code}</span>}
-                        </div>
-                        <svg className={`w-3 h-3 text-gray-300 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+        <div className="space-y-2">
+          {(decisions.length > 0 ? decisions : funds).map((item: any) => {
+            const d = decisions.length > 0 ? item : null
+            const f = decisions.length > 0 ? null : item
+            const fundId = d ? d.fundId : f.id
+            const fundName = d ? d.name : f.name
+            const fundCode = d ? d.code : f.code
+            const fundColor = d ? d.color : f.color
+            const est = estimates[fundId]
+            const fc = forecasts[fundId]
+            const pos = d?.position
+            const costNav = pos?.costNav ?? 0
+            const gainPct = pos?.gainPct ?? (f ? f.gain_pct : 0)
+            const mktValue = pos?.marketValue ?? (f ? f.current_value : 0)
+            const isExpanded = expandedId === fundId
+            const published = isNavPublished(est)
+            const displayNav = published ? est.officialNav : (est ? est.gsz : (d ? d.nav : (f ? f.market_nav : 0)))
+            const displayChangePct = published
+              ? (est.prevNav > 0 ? ((est.officialNav - est.prevNav) / est.prevNav) * 100 : 0)
+              : (est ? est.gszzl : 0)
+            return (
+              <div key={fundId} className="bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3.5 transition-colors cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : fundId)}>
+                {/* 主行：基金名 + 核心数据 + 预测/建议 */}
+                <div className="flex items-center gap-3">
+                  {/* 左：基金 */}
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: fundColor }} />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium text-sm text-gray-900 truncate">{fundName}</span>
+                        {fundCode && <span className="text-[11px] text-gray-400 shrink-0">{fundCode}</span>}
                       </div>
-                      {isExpanded && d.reasoning && d.reasoning.length > 0 && (
-                        <div className="mt-2 ml-4 space-y-1" onClick={e => e.stopPropagation()}>
-                          {d.reasoning.map((r, i) => (
-                            <div key={i} className="text-[11px] text-gray-500 leading-relaxed">{r}</div>
-                          ))}
-                          {d.masterSignals && (
-                            <div className="flex gap-2 mt-1.5 flex-wrap">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">恐惧贪婪 {d.masterSignals.fearGreed}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-600">{d.masterSignals.cycleLabel}</span>
-                              {d.dimensions && <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-50 text-orange-600">RSI {d.dimensions.technical.rsi.toFixed(0)}</span>}
-                              {d.dimensions && <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-600">消息{d.dimensions.news.sentiment}</span>}
-                              {d.capitalFlow && <span className={`text-[10px] px-1.5 py-0.5 rounded ${d.capitalFlow.flowScore > 10 ? 'bg-red-50 text-red-600' : d.capitalFlow.flowScore < -10 ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-500'}`}>{d.capitalFlow.flowLabel}</span>}
-                            </div>
-                          )}
-                          {fc && (
-                            <div className="flex gap-2 mt-1.5 flex-wrap">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${fc.direction === 'up' ? 'bg-red-50 text-red-600' : fc.direction === 'down' ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-600'}`}>
-                                预测 {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
-                              </span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700">信心 {fc.confidence}%</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-50 text-gray-600">波动率 {fc.volatility}%</span>
-                              {fc.flowLabel && (
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${(fc.flowScore ?? 0) > 10 ? 'bg-red-50 text-red-600' : (fc.flowScore ?? 0) < -10 ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-500'}`}>
-                                  {fc.flowLabel}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <button onClick={(e) => { e.stopPropagation(); navigate(`/funds/${d.fundId}`) }} className="text-[11px] text-indigo-600 hover:text-indigo-800 mt-1">查看详情 →</button>
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono font-medium text-gray-900 align-top">
-                      <div>
-                        {displayNav > 0 ? displayNav.toFixed(4) : '-'}
-                        {published && <div className="text-[10px] text-blue-500 font-normal">净值已出</div>}
-                        {!published && est && est.gztime && <div className="text-[10px] text-gray-400 font-normal">{est.gztime.slice(11, 16)}</div>}
+                      <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                        <span className="font-mono">{displayNav > 0 ? displayNav.toFixed(4) : '-'}</span>
+                        {displayNav > 0 && <span className={`font-medium ${displayChangePct >= 0 ? 'text-red-500' : 'text-green-600'}`}>{displayChangePct >= 0 ? '+' : ''}{displayChangePct.toFixed(2)}%</span>}
+                        {published && <span className="text-[10px] text-blue-500">净值</span>}
+                        {!published && est?.gztime && <span className="text-[10px] text-gray-400">{est.gztime.slice(11, 16)}</span>}
                       </div>
-                    </td>
-                    <td className="py-2.5 pr-3 text-right align-top">
-                      {displayNav > 0 ? (
-                        <span className={`font-medium ${displayChangePct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {displayChangePct >= 0 ? '+' : ''}{displayChangePct.toFixed(2)}%
-                        </span>
-                      ) : '-'}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono text-gray-700 align-top">
-                      {costNav > 0 ? costNav.toFixed(4) : '-'}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-medium text-gray-900 align-top">
-                      {mktValue > 0 ? fmt(mktValue) : '-'}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right align-top">
-                      <span className={`font-medium ${gainPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%
+                    </div>
+                  </div>
+
+                  {/* 中：市值+盈亏 */}
+                  <div className="hidden sm:block text-right shrink-0 w-28">
+                    <div className="text-sm font-semibold text-gray-900">{mktValue > 0 ? fmt(mktValue) : '-'}</div>
+                    <div className={`text-xs font-medium ${gainPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>{gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%</div>
+                  </div>
+
+                  {/* 右：预测 */}
+                  <div className="shrink-0 w-20 text-center">
+                    {fc ? (
+                      <span className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-lg text-xs font-bold ${
+                        fc.direction === 'up' ? 'bg-red-50 text-red-600' :
+                        fc.direction === 'down' ? 'bg-green-50 text-green-600' :
+                        'bg-gray-100 text-gray-500'
+                      }`}>
+                        {fc.direction === 'up' ? '↑' : fc.direction === 'down' ? '↓' : '→'}
+                        {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
                       </span>
-                    </td>
-                    <td className="py-2.5 pr-3 text-center align-top">
-                      {fc ? (
-                        <div>
-                          <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[11px] font-bold ${
-                            fc.direction === 'up' ? 'bg-red-50 text-red-600' :
-                            fc.direction === 'down' ? 'bg-green-50 text-green-600' :
-                            'bg-gray-100 text-gray-500'
-                          }`}>
-                            {fc.direction === 'up' ? '↑' : fc.direction === 'down' ? '↓' : '→'}
-                            {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
-                          </span>
-                          <div className="text-[10px] text-gray-400 mt-0.5">{fc.predictedNav.toFixed(4)}</div>
-                        </div>
-                      ) : forecastsLoading ? (
-                        <span className="text-[10px] text-gray-400 animate-pulse">预测中</span>
-                      ) : (
-                        <span className="text-[10px] text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-3 text-center align-top">
+                    ) : forecastsLoading ? (
+                      <span className="text-xs text-gray-400 animate-pulse">预测中</span>
+                    ) : <span className="text-xs text-gray-400">-</span>}
+                  </div>
+
+                  {/* 右：决策 */}
+                  <div className="shrink-0 w-24 text-right">
+                    {d ? (
                       <div>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
+                        <span className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold ${
                           d.action === 'buy' ? 'bg-emerald-100 text-emerald-700' :
                           d.action === 'sell' ? 'bg-red-100 text-red-700' :
                           'bg-gray-100 text-gray-600'
                         }`}>
                           {d.action === 'buy' ? '买入' : d.action === 'sell' ? '卖出' : '持有'}
                         </span>
-                        {d.confidence > 0 && <div className="text-[10px] text-gray-400 mt-0.5">信心 {d.confidence}%</div>}
+                        {d.amount > 0 && <div className={`text-xs mt-0.5 font-medium ${d.action === 'buy' ? 'text-emerald-700' : 'text-red-700'}`}>{fmt(d.amount)}</div>}
                       </div>
-                    </td>
-                    <td className="py-2.5 text-right align-top">
-                      {d.amount > 0 ? (
-                        <div>
-                          <span className={`font-medium ${d.action === 'buy' ? 'text-emerald-700' : d.action === 'sell' ? 'text-red-700' : 'text-gray-700'}`}>
-                            {fmt(d.amount)}
-                          </span>
-                          <div className="text-[10px] text-gray-400">{d.shares.toFixed(2)}份</div>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
-                    </td>
-                  </tr>
-                )
-              }) : funds.map(f => {
-                const est = estimates[f.id]
-                const fc = forecasts[f.id]
-                const published = isNavPublished(est)
-                const displayNav = published ? est.officialNav : (est ? est.gsz : (f.market_nav > 0 ? f.market_nav : 0))
-                const displayChangePct = published
-                  ? (est.prevNav > 0 ? ((est.officialNav - est.prevNav) / est.prevNav) * 100 : 0)
-                  : (est ? est.gszzl : 0)
-                return (
-                  <tr key={f.id} className="hover:bg-gray-50/50 cursor-pointer transition-colors" onClick={() => navigate(`/funds/${f.id}`)}>
-                    <td className="py-2.5 pr-3">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: f.color }} />
-                        <span className="font-medium text-gray-900">{f.name}</span>
-                        {f.code && <span className="text-xs text-gray-400 ml-1">{f.code}</span>}
+                    ) : <span className="text-xs text-gray-400 animate-pulse">分析中</span>}
+                  </div>
+
+                  <svg className={`w-4 h-4 text-gray-300 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                </div>
+
+                {/* 展开详情 */}
+                {isExpanded && (
+                  <div className="mt-3 pt-3 border-t border-gray-200/60 space-y-2" onClick={e => e.stopPropagation()}>
+                    {/* 关键指标行 */}
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {costNav > 0 && <span className="px-2 py-1 bg-white rounded-md border border-gray-200 text-gray-600">成本 {costNav.toFixed(4)}</span>}
+                      {d?.masterSignals && <span className="px-2 py-1 bg-blue-50 rounded-md text-blue-600">恐惧贪婪 {d.masterSignals.fearGreed}</span>}
+                      {d?.masterSignals && <span className="px-2 py-1 bg-purple-50 rounded-md text-purple-600">{d.masterSignals.cycleLabel}</span>}
+                      {d?.dimensions && <span className="px-2 py-1 bg-orange-50 rounded-md text-orange-600">RSI {d.dimensions.technical.rsi.toFixed(0)}</span>}
+                      {d?.capitalFlow && <span className={`px-2 py-1 rounded-md ${d.capitalFlow.flowScore > 10 ? 'bg-red-50 text-red-600' : d.capitalFlow.flowScore < -10 ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}`}>{d.capitalFlow.flowLabel}</span>}
+                      {d?.confidence > 0 && <span className="px-2 py-1 bg-yellow-50 rounded-md text-yellow-700">信心 {d.confidence}%</span>}
+                    </div>
+                    {/* 推理过程 */}
+                    {d?.reasoning && d.reasoning.length > 0 && (
+                      <div className="space-y-0.5">
+                        {d.reasoning.map((r: string, i: number) => (
+                          <div key={i} className="text-xs text-gray-500 leading-relaxed">{r}</div>
+                        ))}
                       </div>
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono text-gray-900">
-                      <div>
-                        {displayNav > 0 ? displayNav.toFixed(4) : '-'}
-                        {published && <div className="text-[10px] text-blue-500">净值已出</div>}
-                      </div>
-                    </td>
-                    <td className="py-2.5 pr-3 text-right">
-                      {displayNav > 0 ? (
-                        <span className={`font-medium ${displayChangePct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {displayChangePct >= 0 ? '+' : ''}{displayChangePct.toFixed(2)}%
-                        </span>
-                      ) : '-'}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right font-mono text-gray-700">-</td>
-                    <td className="py-2.5 pr-3 text-right">{fmt(f.current_value)}</td>
-                    <td className="py-2.5 pr-3 text-right">
-                      <span className={`font-medium ${f.gain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {f.gain >= 0 ? '+' : ''}{f.gain_pct.toFixed(2)}%
-                      </span>
-                    </td>
-                    <td className="py-2.5 pr-3 text-center">
-                      {fc ? (
-                        <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[11px] font-bold ${
-                          fc.direction === 'up' ? 'bg-red-50 text-red-600' :
-                          fc.direction === 'down' ? 'bg-green-50 text-green-600' :
-                          'bg-gray-100 text-gray-500'
-                        }`}>
-                          {fc.direction === 'up' ? '↑' : fc.direction === 'down' ? '↓' : '→'}
-                          {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
-                        </span>
-                      ) : forecastsLoading ? (
-                        <span className="text-[10px] text-gray-400 animate-pulse">预测中</span>
-                      ) : '-'}
-                    </td>
-                    <td className="py-2.5 pr-3 text-center"><span className="text-xs text-gray-400 animate-pulse">分析中</span></td>
-                    <td className="py-2.5 text-right"><span className="text-xs text-gray-400 animate-pulse">...</span></td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); navigate(`/funds/${fundId}`) }} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium">查看详情 →</button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
 

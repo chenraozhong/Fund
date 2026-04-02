@@ -397,6 +397,9 @@ export const api = {
   },
   createTransaction: (data: Partial<Transaction>) =>
     request<Transaction>('/transactions', { method: 'POST', body: JSON.stringify(data) }),
+  batchCreateTransactions: (transactions: Partial<Transaction>[]) =>
+    request<{ success: boolean; created: number; errors: { index: number; error: string }[]; transactions: Transaction[] }>(
+      '/transactions/batch', { method: 'POST', body: JSON.stringify({ transactions }) }),
   updateTransaction: (id: number, data: Partial<Transaction>) =>
     request<Transaction>(`/transactions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteTransaction: (id: number) =>
@@ -405,6 +408,26 @@ export const api = {
     request<Transaction>('/transactions/merge', { method: 'POST', body: JSON.stringify({ ids }) }),
   splitTransaction: (id: number, shares: number) =>
     request<{ original: Transaction; split: Transaction }>(`/transactions/${id}/split`, { method: 'POST', body: JSON.stringify({ shares }) }),
+  analyzeTradesForDate: (date?: string) => {
+    const qs = date ? `?date=${date}` : '';
+    return request<{
+      date: string;
+      trades: {
+        id: number; fundName: string; fundCode: string; color: string;
+        type: string; shares: number; price: number; amount: number;
+        score: number; grade: string; gradeLabel: string;
+        analysis: string[];
+        details: {
+          bollinger: { percentB: number; position: string };
+          rsi: number; trend: string; trendScore: number; vsMA20: number;
+          forecast: { direction: string; changePct: number };
+          costNav: number; gainPct: number; volatility: number;
+          geoRisk: { score: number; level: string } | null;
+        };
+      }[];
+      summary: { total: number; good: number; neutral: number; bad: number; avgScore: number; verdict: string };
+    }>(`/strategy/trade-analysis${qs}`);
+  },
 
   getTrades: (fundId: number) => request<Trade[]>(`/trades/funds/${fundId}`),
   createTrade: (buyTxIds: number[], sellTxIds: number[]) =>

@@ -100,6 +100,30 @@ db.exec(`
   );
 `);
 
+// 决策记录表
+db.exec(`
+  CREATE TABLE IF NOT EXISTS decision_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    nav REAL NOT NULL,
+    action TEXT NOT NULL,
+    shares REAL NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0,
+    confidence INTEGER NOT NULL DEFAULT 0,
+    urgency TEXT,
+    composite_score INTEGER NOT NULL DEFAULT 0,
+    cycle_phase TEXT,
+    fear_greed INTEGER,
+    reasoning TEXT,
+    forecast_direction TEXT,
+    forecast_change_pct REAL,
+    model_version TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(fund_id, date, model_version)
+  );
+`);
+
 // Migrations
 const migrations = [
   'ALTER TABLE funds ADD COLUMN market_nav REAL DEFAULT 0',
@@ -111,6 +135,8 @@ const migrations = [
   "ALTER TABLE funds ADD COLUMN base_position_pct REAL DEFAULT 30",
   "UPDATE funds SET stop_profit_pct = 20 WHERE stop_profit_pct = 5",
   "UPDATE funds SET stop_loss_pct = 15 WHERE stop_loss_pct = 5",
+  // v6: 版本号
+  "ALTER TABLE forecasts ADD COLUMN model_version TEXT DEFAULT 'v5'",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) { /* column/index already exists */ }

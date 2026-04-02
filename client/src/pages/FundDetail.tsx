@@ -43,6 +43,154 @@ const typeConfig = {
 
 const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '', inputMode: 'amount' as 'shares' | 'amount', inputValue: 0 }
 
+function CostImpactPanel({ transactions, txDates, holdingShares, totalCost, costNav, snapshots }: {
+  transactions: Transaction[]; txDates: string[]; holdingShares: number; totalCost: number; costNav: number; snapshots: DailySnapshot[]
+}) {
+  const [selectedDate, setSelectedDate] = useState(txDates[0] || '')
+
+  const dateTxs = transactions.filter(t => t.date === selectedDate)
+  if (dateTxs.length === 0) return null
+
+  // 从当前持仓反推选中日期交易前的状态
+  // 需要撤销"选中日期及之后"的所有交易
+  const laterTxs = transactions.filter(t => t.date >= selectedDate).sort((a, b) => b.id - a.id)
+  let preAllShares = holdingShares, preAllCost = totalCost
+  for (const tx of laterTxs) {
+    if (tx.type === 'buy') { preAllShares -= tx.shares; preAllCost -= tx.shares * tx.price }
+    else if (tx.type === 'sell') { preAllShares += tx.shares; preAllCost += tx.shares * tx.price }
+    else if (tx.type === 'dividend') { preAllCost += tx.price }
+  }
+  // preAll 现在是选中日期之前的状态，再加回选中日期之前的交易
+  // 实际上只需要撤销选中日期当天的交易
+  const onlyDateTxs = transactions.filter(t => t.date === selectedDate)
+  // 加回选中日期之后（不含当天）的交易，得到"选中日期交易前"的状态
+  const afterDateTxs = transactions.filter(t => t.date > selectedDate).sort((a, b) => a.id - b.id)
+  let preDateShares = preAllShares, preDateCost = preAllCost
+  for (const tx of afterDateTxs) {
+    if (tx.type === 'buy') { preDateShares += tx.shares; preDateCost += tx.shares * tx.price }
+    else if (tx.type === 'sell') { preDateShares -= tx.shares; preDateCost -= tx.shares * tx.price }
+    else if (tx.type === 'dividend') { preDateCost -= tx.price }
+  }
+
+  const preDateCostNav = preDateShares > 0 ? preDateCost / preDateShares : 0
+
+  // 逐笔模拟
+  type TxImpact = { tx: Transaction; costNavBefore: number; costNavAfter: number; costNavDelta: number; sharesAfter: number; costAfter: number }
+  const impacts: TxImpact[] = []
+  let runShares = preDateShares, runCost = preDateCost
+  for (const tx of onlyDateTxs.sort((a, b) => a.id - b.id)) {
+    const costNavBefore = runShares > 0 ? runCost / runShares : 0
+    if (tx.type === 'buy') { runShares += tx.shares; runCost += tx.shares * tx.price }
+    else if (tx.type === 'sell') { runShares -= tx.shares; runCost -= tx.shares * tx.price }
+    else if (tx.type === 'dividend') { runCost -= tx.price }
+    const costNavAfter = runShares > 0 ? runCost / runShares : 0
+    impacts.push({ tx, costNavBefore, costNavAfter, costNavDelta: costNavAfter - costNavBefore, sharesAfter: runShares, costAfter: runCost })
+  }
+
+  const postDateCostNav = runShares > 0 ? runCost / runShares : 0
+  const totalChange = postDateCostNav - preDateCostNav
+  const totalChangePct = preDateCostNav > 0 ? (totalChange / preDateCostNav) * 100 : 0
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">交易成本影响分析</h3>
+            <p className="text-xs text-gray-400">
+              {onlyDateTxs.length} 笔交易，成本净值
+              <span className={`font-bold ml-1 ${totalChange < -0.00005 ? 'text-emerald-600' : totalChange > 0.00005 ? 'text-red-600' : 'text-gray-500'}`}>
+                {totalChange < -0.00005 ? '降低' : totalChange > 0.00005 ? '上升' : '不变'}
+                {Math.abs(totalChange) >= 0.00005 && ` ${Math.abs(totalChange).toFixed(4)} (${totalChangePct >= 0 ? '+' : ''}${totalChangePct.toFixed(2)}%)`}
+              </span>
+            </p>
+          </div>
+        </div>
+        {/* 日期选择 */}
+        <div className="flex items-center gap-1.5">
+          {txDates.slice(0, 5).map(d => (
+            <button key={d} onClick={() => setSelectedDate(d)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                selectedDate === d ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>
+              {d.slice(5)}
+            </button>
+          ))}
+          {txDates.length > 5 && (
+            <select value={txDates.slice(0, 5).includes(selectedDate) ? '' : selectedDate}
+              onChange={e => e.target.value && setSelectedDate(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+              <option value="">更多...</option>
+              {txDates.slice(5).map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {/* 交易前后对比 */}
+      <div className="flex items-center gap-3 mb-4 p-3 bg-gray-50 rounded-lg">
+        <div className="text-center flex-1">
+          <div className="text-[11px] text-gray-400">交易前</div>
+          <div className="text-lg font-bold text-gray-700 font-mono">{preDateCostNav > 0 ? preDateCostNav.toFixed(4) : '-'}</div>
+          <div className="text-[11px] text-gray-400">{preDateShares.toFixed(2)}份 · ¥{preDateCost.toFixed(2)}</div>
+        </div>
+        <div className="shrink-0">
+          <div className={`w-16 text-center py-1.5 rounded-lg text-sm font-bold ${
+            totalChange < -0.00005 ? 'bg-emerald-100 text-emerald-700' :
+            totalChange > 0.00005 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+          }`}>
+            {totalChange < -0.00005 ? '↓' : totalChange > 0.00005 ? '↑' : '→'}
+            {Math.abs(totalChange) >= 0.00005 ? Math.abs(totalChange).toFixed(4) : '0'}
+          </div>
+        </div>
+        <div className="text-center flex-1">
+          <div className="text-[11px] text-gray-400">交易后</div>
+          <div className="text-lg font-bold text-gray-900 font-mono">{postDateCostNav > 0 ? postDateCostNav.toFixed(4) : '-'}</div>
+          <div className="text-[11px] text-gray-400">{runShares.toFixed(2)}份 · ¥{runCost.toFixed(2)}</div>
+        </div>
+      </div>
+
+      {/* 逐笔影响明细 */}
+      <div className="space-y-2">
+        {impacts.map((imp, i) => {
+          const txAmt = imp.tx.type === 'dividend' ? imp.tx.price : imp.tx.shares * imp.tx.price
+          const cfg = typeConfig[imp.tx.type]
+          const dotColor = cfg.bg === 'bg-emerald-50' ? 'bg-emerald-500' : cfg.bg === 'bg-red-50' ? 'bg-red-500' : 'bg-amber-500'
+          return (
+            <div key={i} className="flex items-center gap-3 p-2.5 bg-gray-50/70 rounded-lg text-sm">
+              <div className={`w-2 h-2 rounded-full shrink-0 ${dotColor}`} />
+              <div className="flex-1 min-w-0">
+                <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${cfg.bg} ${cfg.text}`}>{cfg.label}</span>
+                <span className="text-xs text-gray-600 ml-1.5">
+                  {imp.tx.type !== 'dividend'
+                    ? <>{imp.tx.shares.toFixed(2)}份 @ ¥{imp.tx.price.toFixed(4)} = ¥{txAmt.toFixed(2)}</>
+                    : <>¥{txAmt.toFixed(2)}</>
+                  }
+                </span>
+              </div>
+              <div className="shrink-0 text-right">
+                {Math.abs(imp.costNavDelta) >= 0.00005 ? (
+                  <span className={`text-xs font-bold font-mono ${imp.costNavDelta < 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {imp.costNavDelta < 0 ? '↓' : '↑'}{Math.abs(imp.costNavDelta).toFixed(4)}
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-400">-</span>
+                )}
+              </div>
+              <div className="shrink-0 w-20 text-right">
+                <span className="text-xs text-gray-500 font-mono">{imp.costNavAfter.toFixed(4)}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function FundDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -572,6 +720,27 @@ export default function FundDetail() {
               </span>
             </div>
           )}
+          {/* 成本净值每日变化 */}
+          {snapshots.length >= 2 && costNav > 0 && (() => {
+            const prevCostNav = snapshots[snapshots.length - 2]?.cost_nav || 0
+            const costChange = prevCostNav > 0 ? costNav - prevCostNav : 0
+            const costChangePct = prevCostNav > 0 ? (costChange / prevCostNav) * 100 : 0
+            if (Math.abs(costChange) < 0.00005) return null
+            return (
+              <div className={`mt-1.5 pt-1.5 border-t ${costChange < 0 ? 'border-emerald-200' : 'border-red-200'}`}>
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-xs font-bold ${costChange < 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {costChange < 0 ? '↓' : '↑'}{Math.abs(costChange).toFixed(4)}
+                  </span>
+                  <span className={`text-[11px] font-medium ${costChange < 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    ({costChangePct >= 0 ? '+' : ''}{costChangePct.toFixed(2)}%)
+                  </span>
+                  <span className="text-[10px] text-gray-400">vs昨日</span>
+                </div>
+                <div className="text-[10px] text-gray-400">昨日 {prevCostNav.toFixed(4)}</div>
+              </div>
+            )
+          })()}
         </div>
         <div className={`rounded-xl border shadow-sm p-4 ${
           dailyGain !== null
@@ -613,54 +782,146 @@ export default function FundDetail() {
         )
       })()}
 
+      {/* 交易对成本净值的影响（支持选择日期） */}
+      {(() => {
+        // 找出所有有交易的日期（降序）
+        const txDates = [...new Set(transactions.filter(t => t.type !== 'dividend' || true).map(t => t.date))].sort((a, b) => b.localeCompare(a))
+        if (txDates.length === 0 || holdingShares <= 0) return null
+
+        return <CostImpactPanel
+          transactions={transactions}
+          txDates={txDates}
+          holdingShares={holdingShares}
+          totalCost={totalCost}
+          costNav={costNav}
+          snapshots={snapshots}
+        />
+      })()}
+
       {/* 成本/收益趋势图 */}
-      {snapshots.length >= 2 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
+      {snapshots.length >= 2 && (() => {
+        // 计算每日成本净值变化
+        const chartData = snapshots.map((s, i) => {
+          const prevCost = i > 0 ? snapshots[i - 1].cost_nav : s.cost_nav
+          const costChange = s.cost_nav - prevCost
+          const costChangePct = prevCost > 0 ? (costChange / prevCost) * 100 : 0
+          return {
+            date: s.date.slice(5),
+            fullDate: s.date,
+            costNav: s.cost_nav,
+            marketNav: s.market_nav,
+            gainPct: s.gain_pct,
+            gain: s.gain,
+            costChange: i > 0 ? costChange : 0,
+            costChangePct: i > 0 ? costChangePct : 0,
+            totalCost: s.total_cost,
+            holdingShares: s.holding_shares,
+          }
+        })
+        // 统计：成本下降天数
+        const downDays = chartData.filter(d => d.costChange < -0.00005).length
+        const upDays = chartData.filter(d => d.costChange > 0.00005).length
+        const totalCostDrop = chartData.reduce((s, d) => s + (d.costChange < 0 ? d.costChange : 0), 0)
+
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">成本 / 收益趋势</h3>
+                  <p className="text-xs text-gray-400">
+                    近{snapshots.length}天
+                    {downDays > 0 && <span className="text-emerald-600 ml-1">降成本{downDays}天 累计{totalCostDrop.toFixed(4)}</span>}
+                    {upDays > 0 && <span className="text-red-500 ml-1">升成本{upDays}天</span>}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900">成本 / 收益趋势</h3>
-                <p className="text-xs text-gray-400">近{snapshots.length}天 · 每日净值刷新后自动记录</p>
+              <div className="flex items-center gap-4 text-xs">
+                <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded" /> 成本净值</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded" /> 市场净值</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-500 inline-block rounded" /> 收益率%</span>
               </div>
             </div>
-            <div className="flex items-center gap-4 text-xs">
-              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded" /> 成本净值</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block rounded" /> 市场净值</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-500 inline-block rounded" /> 收益率%</span>
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="nav" tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11 }} unit="%" domain={['auto', 'auto']} />
+                <Tooltip
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null
+                    const d = payload[0]?.payload
+                    return (
+                      <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs">
+                        <div className="font-medium text-gray-700 mb-1.5">{label}</div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between gap-4">
+                            <span className="text-blue-600">成本净值</span>
+                            <span className="font-mono font-bold">{d.costNav.toFixed(4)}</span>
+                          </div>
+                          {d.costChange !== 0 && (
+                            <div className="flex justify-between gap-4">
+                              <span className="text-gray-400">日变化</span>
+                              <span className={`font-mono font-bold ${d.costChange < 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                {d.costChange < 0 ? '↓' : '↑'}{Math.abs(d.costChange).toFixed(4)} ({d.costChangePct >= 0 ? '+' : ''}{d.costChangePct.toFixed(2)}%)
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-between gap-4">
+                            <span className="text-amber-600">市场净值</span>
+                            <span className="font-mono">{d.marketNav.toFixed(4)}</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-emerald-600">收益率</span>
+                            <span className={`font-mono font-bold ${d.gainPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{d.gainPct >= 0 ? '+' : ''}{d.gainPct.toFixed(2)}%</span>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <span className="text-gray-400">盈亏</span>
+                            <span className={`font-mono ${d.gain >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{d.gain >= 0 ? '+' : ''}{d.gain.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }}
+                />
+                <ReferenceLine yAxisId="pct" y={0} stroke="#9ca3af" strokeDasharray="3 3" />
+                <Line yAxisId="nav" type="monotone" dataKey="costNav" stroke="#3b82f6" strokeWidth={2.5}
+                  dot={(props: any) => {
+                    const d = chartData[props.index]
+                    if (!d || Math.abs(d.costChange) < 0.00005) return <circle key={props.index} cx={0} cy={0} r={0} />
+                    return <circle key={props.index} cx={props.cx} cy={props.cy} r={4} fill={d.costChange < 0 ? '#10b981' : '#ef4444'} stroke="white" strokeWidth={1.5} />
+                  }}
+                />
+                <Line yAxisId="nav" type="monotone" dataKey="marketNav" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                <Line yAxisId="pct" type="monotone" dataKey="gainPct" stroke="#10b981" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+
+            {/* 成本净值每日变化明细表 */}
+            <div className="mt-4 pt-3 border-t border-gray-100">
+              <div className="text-xs font-medium text-gray-500 mb-2">成本净值每日变化</div>
+              <div className="flex flex-wrap gap-1.5">
+                {chartData.slice(1).reverse().map((d, i) => {
+                  if (Math.abs(d.costChange) < 0.00005) return (
+                    <span key={i} className="px-2 py-1 rounded-md bg-gray-50 text-[11px] text-gray-400 font-mono">
+                      {d.date} 无变化
+                    </span>
+                  )
+                  return (
+                    <span key={i} className={`px-2 py-1 rounded-md text-[11px] font-mono font-medium ${d.costChange < 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                      {d.date} {d.costChange < 0 ? '↓' : '↑'}{Math.abs(d.costChange).toFixed(4)}
+                    </span>
+                  )
+                })}
+              </div>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={snapshots.map(s => ({
-              date: s.date.slice(5),
-              costNav: s.cost_nav,
-              marketNav: s.market_nav,
-              gainPct: s.gain_pct,
-              gain: s.gain,
-            }))}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="nav" tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-              <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11 }} unit="%" domain={['auto', 'auto']} />
-              <Tooltip
-                formatter={(value: number, name: string) => {
-                  if (name === 'costNav') return [value.toFixed(4), '成本净值']
-                  if (name === 'marketNav') return [value.toFixed(4), '市场净值']
-                  if (name === 'gainPct') return [value.toFixed(2) + '%', '收益率']
-                  return [value, name]
-                }}
-                labelFormatter={(label) => `日期: ${label}`}
-              />
-              <ReferenceLine yAxisId="pct" y={0} stroke="#9ca3af" strokeDasharray="3 3" />
-              <Line yAxisId="nav" type="monotone" dataKey="costNav" stroke="#3b82f6" strokeWidth={2} dot={false} />
-              <Line yAxisId="nav" type="monotone" dataKey="marketNav" stroke="#f59e0b" strokeWidth={2} dot={false} />
-              <Line yAxisId="pct" type="monotone" dataKey="gainPct" stroke="#10b981" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
+        )
+      })()}
 
       {/* 明日行情预测 */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">

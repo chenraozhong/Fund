@@ -1,5 +1,23 @@
 // 共享数据源：基本面 + 消息面获取
 
+// 带超时和重试的 fetch 封装
+export async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeout: number = 10000,
+  retries: number = 2
+): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, { ...options, signal: AbortSignal.timeout(timeout) });
+    } catch (err) {
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw new Error('fetch failed');
+}
+
 export interface FundFundamental {
   name: string; type: string; rate: string; minBuy: string;
   manager: string; managerDays: string; managerReturn: string;
@@ -22,7 +40,7 @@ const FUND_DEFAULTS: FundFundamental = {
 
 export async function fetchFundamental(code: string): Promise<FundFundamental> {
   try {
-    const res = await fetch(`https://fund.eastmoney.com/pingzhongdata/${code}.js`, {
+    const res = await fetchWithTimeout(`https://fund.eastmoney.com/pingzhongdata/${code}.js`, {
       headers: { 'Referer': 'https://fund.eastmoney.com/' },
     });
     if (!res.ok) return { ...FUND_DEFAULTS };
@@ -144,7 +162,7 @@ export async function fetchSectorNews(keyword: string, count: number = 8): Promi
       param: { cmsArticleWebOld: { searchScope: 'default', sort: 'default', pageIndex: 1, pageSize: count } },
     });
     const url = `https://search-api-web.eastmoney.com/search/jsonp?cb=&param=${encodeURIComponent(param)}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     let text = await res.text();
     text = text.replace(/^\(/, '').replace(/\)$/, '');
@@ -255,7 +273,7 @@ export interface FundHoldingsResult {
 export async function fetchFundHoldings(code: string): Promise<FundHoldingsResult | null> {
   try {
     const url = `https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10`;
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: { 'Referer': 'https://fundf10.eastmoney.com/' },
     });
     if (!res.ok) return null;
@@ -325,7 +343,7 @@ export async function fetchRedeemFees(code: string): Promise<RedeemFeeLevel[]> {
     { minDays: 730, maxDays: Infinity, feeRate: 0, label: '730天以上' },
   ];
   try {
-    const res = await fetch(`https://fundf10.eastmoney.com/jjfl_${code}.html`, {
+    const res = await fetchWithTimeout(`https://fundf10.eastmoney.com/jjfl_${code}.html`, {
       headers: { 'Referer': 'https://fundf10.eastmoney.com/' },
     });
     if (!res.ok) return defaults;
@@ -431,7 +449,7 @@ async function fetchMarketMainFlow(days: number = 5): Promise<CapitalFlowData['m
   if (_marketCache && Date.now() - _marketCache.ts < CACHE_TTL) return _marketCache.data;
   try {
     const url = `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.000001&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65&lmt=${days}&klt=101&ut=b2884a393a59ad64002292a3e90d46a5`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data = await res.json() as any;
     const klines = data?.data?.klines || [];
@@ -455,7 +473,7 @@ async function fetchNorthboundFlow(days: number = 5): Promise<CapitalFlowData['n
   if (_northboundCache && Date.now() - _northboundCache.ts < CACHE_TTL) return _northboundCache.data;
   try {
     const url = `https://push2his.eastmoney.com/api/qt/kamt.kline/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56&klt=101&lmt=${days}&ut=b2884a393a59ad64002292a3e90d46a5`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data = await res.json() as any;
     const hk2sh = data?.data?.hk2sh || [];
@@ -507,7 +525,7 @@ async function fetchSectorFlow(fundName: string): Promise<CapitalFlowData['secto
 
   try {
     const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po=1&np=1&fltt=2&invt=2&fid=f62&fs=m:90+t:2&fields=f12,f14,f62,f184,f66,f69,f72,f75,f78,f81&ut=b2884a393a59ad64002292a3e90d46a5`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return null;
     const data = await res.json() as any;
     const list = data?.data?.diff || [];
@@ -546,7 +564,7 @@ async function fetchHoldingsFlow(holdings: FundHolding[]): Promise<HoldingFlow[]
 
   try {
     const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f14,f62,f184,f66,f69,f72,f75&secids=${secids}&ut=b2884a393a59ad64002292a3e90d46a5`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data = await res.json() as any;
     const list = data?.data?.diff || [];
@@ -734,4 +752,158 @@ export function checkSectorExposure(
   const reduction = overExposed ? 0.5 : 1.0; // 过度集中时缩减50%
 
   return { totalExposure: Math.round(exposurePct * 10) / 10, overExposed, reduction };
+}
+
+// ============================================================
+// 地缘/事件风险因子（全球风险温度计）
+// ============================================================
+
+export interface GeopoliticalRisk {
+  gold: { price: number; prevClose: number; changePct: number };      // 黄金 COMEX
+  oil: { price: number; prevClose: number; changePct: number };       // WTI原油
+  dxy: { price: number; changePct: number };                          // 美元指数
+  usIndices: { name: string; changePct: number }[];                   // 美股三大指数
+  hangSeng: { changePct: number };                                    // 恒生指数
+  riskScore: number;        // -100(极度恐慌) ~ +100(极度乐观)
+  riskLevel: 'extreme_fear' | 'fear' | 'neutral' | 'greed' | 'extreme_greed';
+  riskDetail: string;       // 风险说明
+  signals: string[];        // 具体信号列表
+}
+
+// 新浪财经数据解析
+function parseSinaVar(text: string, name: string): string[] {
+  const re = new RegExp(`var hq_str_${name}="([^"]*)"`, 's');
+  const m = text.match(re);
+  return m ? m[1].split(',') : [];
+}
+
+// 缓存（5分钟TTL，全球数据变化不如A股频繁）
+let _geoCache: { data: GeopoliticalRisk; ts: number } | null = null;
+const GEO_CACHE_TTL = 5 * 60 * 1000;
+
+/** 获取全球风险数据并计算风险评分 */
+export async function fetchGeopoliticalRisk(): Promise<GeopoliticalRisk> {
+  if (_geoCache && Date.now() - _geoCache.ts < GEO_CACHE_TTL) return _geoCache.data;
+
+  const defaultResult: GeopoliticalRisk = {
+    gold: { price: 0, prevClose: 0, changePct: 0 },
+    oil: { price: 0, prevClose: 0, changePct: 0 },
+    dxy: { price: 0, changePct: 0 },
+    usIndices: [], hangSeng: { changePct: 0 },
+    riskScore: 0, riskLevel: 'neutral', riskDetail: '', signals: [],
+  };
+
+  try {
+    // 并行获取：商品 + 全球指数
+    const [commodityRes, indicesRes] = await Promise.all([
+      fetchWithTimeout(
+        'https://hq.sinajs.cn/list=hf_GC,hf_CL',
+        { headers: { 'Referer': 'https://finance.sina.com.cn' } }
+      ).then(r => r.text()).catch(() => ''),
+      fetchWithTimeout(
+        'https://hq.sinajs.cn/list=int_nasdaq,int_sp500,int_dji,int_hangseng,DINIW',
+        { headers: { 'Referer': 'https://finance.sina.com.cn' } }
+      ).then(r => r.text()).catch(() => ''),
+    ]);
+
+    // === 解析黄金 COMEX ===
+    const gcParts = parseSinaVar(commodityRes, 'hf_GC');
+    // 格式: 当前价, _, 开盘, 最高, 昨最高, 昨最低, 时间, 昨收, 昨结算
+    const goldPrice = parseFloat(gcParts[0]) || 0;
+    const goldPrevClose = parseFloat(gcParts[7]) || 0;
+    const goldChangePct = goldPrevClose > 0 ? ((goldPrice - goldPrevClose) / goldPrevClose) * 100 : 0;
+
+    // === 解析原油 WTI ===
+    const clParts = parseSinaVar(commodityRes, 'hf_CL');
+    const oilPrice = parseFloat(clParts[0]) || 0;
+    const oilPrevClose = parseFloat(clParts[7]) || 0;
+    const oilChangePct = oilPrevClose > 0 ? ((oilPrice - oilPrevClose) / oilPrevClose) * 100 : 0;
+
+    // === 解析美元指数 ===
+    const dxyParts = parseSinaVar(indicesRes, 'DINIW');
+    // 格式: 时间, 当前价, 开盘, 昨收, ...
+    const dxyPrice = parseFloat(dxyParts[1]) || 0;
+    const dxyPrevClose = parseFloat(dxyParts[3]) || 0;
+    const dxyChangePct = dxyPrevClose > 0 ? ((dxyPrice - dxyPrevClose) / dxyPrevClose) * 100 : 0;
+
+    // === 解析美股+恒生 ===
+    // 格式: 名称, 最新, 涨跌额, 涨跌幅
+    const usIndices: { name: string; changePct: number }[] = [];
+    for (const [key, label] of [['int_nasdaq', '纳指'], ['int_sp500', '标普'], ['int_dji', '道指']] as const) {
+      const parts = parseSinaVar(indicesRes, key);
+      if (parts.length >= 4) {
+        usIndices.push({ name: label, changePct: parseFloat(parts[3]) || 0 });
+      }
+    }
+    const hsParts = parseSinaVar(indicesRes, 'int_hangseng');
+    const hsChangePct = hsParts.length >= 4 ? parseFloat(hsParts[3]) || 0 : 0;
+
+    // === 综合风险评分 ===
+    let riskScore = 0;
+    const signals: string[] = [];
+
+    // 1. 原油暴涨 → 地缘冲突升级（最重要信号）
+    if (oilChangePct > 8) { riskScore -= 40; signals.push(`原油暴涨${oilChangePct.toFixed(1)}%→地缘冲突`); }
+    else if (oilChangePct > 4) { riskScore -= 25; signals.push(`原油大涨${oilChangePct.toFixed(1)}%→供应风险`); }
+    else if (oilChangePct > 2) { riskScore -= 10; signals.push(`原油上涨${oilChangePct.toFixed(1)}%`); }
+    else if (oilChangePct < -4) { riskScore += 15; signals.push(`原油下跌${oilChangePct.toFixed(1)}%→紧张缓和`); }
+
+    // 2. 黄金大涨 → 避险情绪（但暴跌可能是流动性危机）
+    if (goldChangePct > 3) { riskScore -= 25; signals.push(`黄金暴涨${goldChangePct.toFixed(1)}%→恐慌避险`); }
+    else if (goldChangePct > 1.5) { riskScore -= 12; signals.push(`黄金上涨${goldChangePct.toFixed(1)}%→避险升温`); }
+    else if (goldChangePct < -3) { riskScore -= 20; signals.push(`黄金暴跌${goldChangePct.toFixed(1)}%→流动性恐慌`); }
+    else if (goldChangePct < -1.5) { riskScore += 5; signals.push(`黄金回落${goldChangePct.toFixed(1)}%`); }
+
+    // 3. 原油+黄金同时暴涨 → 高确信地缘事件（叠加惩罚）
+    if (oilChangePct > 4 && goldChangePct > 2) {
+      riskScore -= 20; signals.push(`油金齐涨→高确信地缘危机`);
+    }
+
+    // 4. 美股下跌 → 全球风险偏好下降
+    const avgUsChange = usIndices.length > 0 ? usIndices.reduce((s, i) => s + i.changePct, 0) / usIndices.length : 0;
+    if (avgUsChange < -2) { riskScore -= 20; signals.push(`美股大跌${avgUsChange.toFixed(1)}%→全球Risk-off`); }
+    else if (avgUsChange < -1) { riskScore -= 10; signals.push(`美股下跌${avgUsChange.toFixed(1)}%`); }
+    else if (avgUsChange > 1.5) { riskScore += 12; signals.push(`美股上涨${avgUsChange.toFixed(1)}%→风险偏好回升`); }
+
+    // 5. 恒生指数（A股邻居，关联性高）
+    if (hsChangePct < -2) { riskScore -= 15; signals.push(`恒生大跌${hsChangePct.toFixed(1)}%→港A联动`); }
+    else if (hsChangePct < -1) { riskScore -= 8; signals.push(`恒生下跌${hsChangePct.toFixed(1)}%`); }
+    else if (hsChangePct > 1.5) { riskScore += 10; signals.push(`恒生上涨${hsChangePct.toFixed(1)}%`); }
+
+    // 6. 美元指数走强 → 新兴市场承压
+    if (dxyChangePct > 1) { riskScore -= 8; signals.push(`美元走强${dxyChangePct.toFixed(1)}%→新兴市场承压`); }
+    else if (dxyChangePct < -1) { riskScore += 5; signals.push(`美元走弱${dxyChangePct.toFixed(1)}%`); }
+
+    riskScore = Math.max(-100, Math.min(100, riskScore));
+
+    const riskLevel: GeopoliticalRisk['riskLevel'] =
+      riskScore <= -50 ? 'extreme_fear' :
+      riskScore <= -20 ? 'fear' :
+      riskScore >= 50 ? 'extreme_greed' :
+      riskScore >= 20 ? 'greed' : 'neutral';
+
+    // 生成说明文字
+    const detailParts: string[] = [];
+    if (goldPrice > 0) detailParts.push(`金${goldChangePct >= 0 ? '+' : ''}${goldChangePct.toFixed(1)}%`);
+    if (oilPrice > 0) detailParts.push(`油${oilChangePct >= 0 ? '+' : ''}${oilChangePct.toFixed(1)}%`);
+    if (usIndices.length > 0) detailParts.push(`美股${avgUsChange >= 0 ? '+' : ''}${avgUsChange.toFixed(1)}%`);
+    if (hsChangePct !== 0) detailParts.push(`恒生${hsChangePct >= 0 ? '+' : ''}${hsChangePct.toFixed(1)}%`);
+
+    const result: GeopoliticalRisk = {
+      gold: { price: goldPrice, prevClose: goldPrevClose, changePct: Math.round(goldChangePct * 100) / 100 },
+      oil: { price: oilPrice, prevClose: oilPrevClose, changePct: Math.round(oilChangePct * 100) / 100 },
+      dxy: { price: dxyPrice, changePct: Math.round(dxyChangePct * 100) / 100 },
+      usIndices,
+      hangSeng: { changePct: Math.round(hsChangePct * 100) / 100 },
+      riskScore,
+      riskLevel,
+      riskDetail: detailParts.join('；'),
+      signals,
+    };
+
+    _geoCache = { data: result, ts: Date.now() };
+    return result;
+  } catch {
+    return defaultResult;
+  }
 }

@@ -108,6 +108,75 @@ router.post('/', (req: Request, res: Response) => {
   res.status(201).json(tx);
 });
 
+// 批量创建交易
+router.post('/batch', (req: Request, res: Response) => {
+  const { transactions } = req.body;
+  if (!Array.isArray(transactions) || transactions.length === 0) {
+    res.status(400).json({ error: '请提供交易列表' });
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const results: any[] = [];
+  const errors: { index: number; error: string }[] = [];
+
+  const batchInsert = db.transaction(() => {
+    for (let i = 0; i < transactions.length; i++) {
+      const { fund_id, date, type, shares, price, notes } = transactions[i];
+      let { asset } = transactions[i];
+
+      if (!fund_id || !date || !type) {
+        errors.push({ index: i, error: `第${i + 1}条：缺少基金/日期/类型` });
+        continue;
+      }
+
+      if (!asset) {
+        const fundRow = db.prepare('SELECT name FROM funds WHERE id = ?').get(fund_id) as any;
+        if (!fundRow) { errors.push({ index: i, error: `第${i + 1}条：基金不存在` }); continue; }
+        asset = fundRow.name;
+      }
+
+      const ins = db.prepare(
+        'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(fund_id, date, type, asset, shares || 0, price || 0, notes || null);
+
+      // 历史交易调整底仓
+      if (date < today) {
+        const base = db.prepare(
+          "SELECT * FROM transactions WHERE fund_id = ? AND notes LIKE '%历史持仓%' AND type = 'buy' ORDER BY id LIMIT 1"
+        ).get(fund_id) as any;
+        if (base) {
+          const baseShares = base.shares as number;
+          const baseCost = base.shares * base.price;
+          let newBaseShares = baseShares;
+          let newBaseCost = baseCost;
+          if (type === 'buy') { newBaseShares = baseShares - (shares || 0); newBaseCost = baseCost - (shares || 0) * (price || 0); }
+          else if (type === 'sell') { newBaseShares = baseShares + (shares || 0); newBaseCost = baseCost + (shares || 0) * (price || 0); }
+          else if (type === 'dividend') { newBaseCost = baseCost - (price || 0); }
+          if (newBaseShares > 0.0001) {
+            db.prepare('UPDATE transactions SET shares = ?, price = ? WHERE id = ?')
+              .run(Math.round(newBaseShares * 10000) / 10000, Math.round((newBaseCost / newBaseShares) * 10000) / 10000, base.id);
+          } else {
+            db.prepare('DELETE FROM transactions WHERE id = ?').run(base.id);
+          }
+        }
+      }
+
+      results.push(ins.lastInsertRowid);
+    }
+  });
+
+  try {
+    batchInsert();
+    const created = results.map(id =>
+      db.prepare('SELECT t.*, f.name as fund_name, f.color as fund_color FROM transactions t JOIN funds f ON f.id = t.fund_id WHERE t.id = ?').get(id)
+    );
+    res.status(201).json({ success: true, created: created.length, errors, transactions: created });
+  } catch (err: any) {
+    res.status(500).json({ error: '批量创建失败: ' + err.message });
+  }
+});
+
 router.put('/:id', (req: Request, res: Response) => {
   const { fund_id, date, type, asset, shares, price, notes } = req.body;
   const { id } = req.params;
