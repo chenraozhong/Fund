@@ -92,7 +92,7 @@ function CostImpactPanel({ transactions, txDates, holdingShares, totalCost, cost
   const totalChangePct = preDateCostNav > 0 ? (totalChange / preDateCostNav) * 100 : 0
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
@@ -595,47 +595,49 @@ export default function FundDetail() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4">
-        <button onClick={() => navigate('/funds')} className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-        </button>
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg font-bold shrink-0" style={{ backgroundColor: fund.color }}>
-            {fund.name.charAt(0).toUpperCase()}
-          </div>
-          <div className="flex-1">
-            <div className="flex items-baseline gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">{fund.name}</h1>
-              {fund.code && <span className="text-sm text-gray-400">{fund.code}</span>}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 sm:gap-4">
+          <button onClick={() => navigate('/funds')} className="p-1.5 sm:p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+          </button>
+          <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-white text-base sm:text-lg font-bold shrink-0" style={{ backgroundColor: fund.color }}>
+              {fund.name.charAt(0).toUpperCase()}
             </div>
-            <div className="flex items-center gap-3 mt-1 text-sm">
-              <span className="text-gray-500">
-                <span className="font-semibold text-gray-700">{holdingShares.toFixed(2)}</span> 份
-              </span>
-              <span className="text-gray-300">|</span>
-              {latestNavInfo ? (
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-2 sm:gap-3">
+                <h1 className="text-lg sm:text-2xl font-bold text-gray-900 truncate">{fund.name}</h1>
+                {fund.code && <span className="text-xs sm:text-sm text-gray-400 shrink-0">{fund.code}</span>}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-0.5 mt-0.5 sm:mt-1 text-xs sm:text-sm">
                 <span className="text-gray-500">
-                  净值 <span className="font-semibold text-gray-700 font-mono">{latestNavInfo.nav.toFixed(4)}</span>
-                  <span className="text-gray-400 ml-1">({latestNavInfo.date})</span>
-                  {latestNavInfo.estimatedNav && latestNavInfo.estimatedNav > 0 && (
-                    <>
-                      <span className="text-gray-300 mx-1">→</span>
-                      <span className="font-mono font-semibold text-indigo-600">估 {latestNavInfo.estimatedNav.toFixed(4)}</span>
-                      {latestNavInfo.estimateTime && <span className="text-gray-400 ml-1 text-xs">{latestNavInfo.estimateTime}</span>}
-                    </>
-                  )}
+                  <span className="font-semibold text-gray-700">{holdingShares.toFixed(2)}</span> 份
                 </span>
-              ) : mNav > 0 ? (
-                <span className="text-gray-500">净值 <span className="font-semibold text-gray-700 font-mono">{mNav.toFixed(4)}</span></span>
-              ) : null}
-              <span className="text-gray-300">|</span>
-              <span className="text-gray-400 text-xs">止盈{stopProfit}% / 止损{stopLoss}%</span>
+                <span className="text-gray-300 hidden sm:inline">|</span>
+                {latestNavInfo ? (
+                  <span className="text-gray-500">
+                    <span className="hidden sm:inline">净值 </span><span className="font-semibold text-gray-700 font-mono">{latestNavInfo.nav.toFixed(4)}</span>
+                    <span className="text-gray-400 ml-1 hidden sm:inline">({latestNavInfo.date})</span>
+                    {latestNavInfo.estimatedNav && latestNavInfo.estimatedNav > 0 && (
+                      <>
+                        <span className="text-gray-300 mx-1">→</span>
+                        <span className="font-mono font-semibold text-indigo-600">估 {latestNavInfo.estimatedNav.toFixed(4)}</span>
+                        {latestNavInfo.estimateTime && <span className="text-gray-400 ml-1 text-[11px] hidden sm:inline">{latestNavInfo.estimateTime}</span>}
+                      </>
+                    )}
+                  </span>
+                ) : mNav > 0 ? (
+                  <span className="text-gray-500">净值 <span className="font-semibold text-gray-700 font-mono">{mNav.toFixed(4)}</span></span>
+                ) : null}
+                <span className="text-gray-400 text-[11px] hidden sm:inline">止盈{stopProfit}% / 止损{stopLoss}%</span>
+              </div>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Action buttons - separate row on mobile */}
+        <div className="flex items-center gap-2 overflow-x-auto pl-0 sm:pl-0">
           {/* 底仓设置 */}
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg shrink-0">
             <svg className="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
             <span className="text-xs text-amber-700 font-medium">底仓</span>
             <select
@@ -653,16 +655,16 @@ export default function FundDetail() {
           </div>
           <button
             onClick={() => { setShowAdjust(true); setAdjustMode('gain'); setGainForm(Math.round(totalGain * 100) / 100); setAdjustForm({ shares: holdingShares, nav: costNav }) }}
-            className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 text-sm font-medium transition-colors"
+            className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 text-xs sm:text-sm font-medium transition-colors shrink-0"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+            <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             调整持仓
           </button>
           <button
             onClick={() => { setShowForm(true); setEditId(null); setForm({ ...emptyForm, fund_id: fundId }) }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors"
+            className="inline-flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs sm:text-sm font-medium shadow-sm transition-colors shrink-0"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+            <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
             添加交易
           </button>
         </div>
@@ -701,14 +703,14 @@ export default function FundDetail() {
           dailyPct = ((currentNav - prevNavVal) / prevNavVal) * 100;
         }
         return (
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">总市值</div>
-          <div className="text-xl font-bold text-gray-900">{fmt(totalValue)}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4">
+          <div className="text-[11px] sm:text-xs text-gray-400 uppercase tracking-wide mb-1">总市值</div>
+          <div className="text-base sm:text-xl font-bold text-gray-900">{fmt(totalValue)}</div>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">总成本</div>
-          <div className="text-xl font-bold text-gray-900">{fmt(totalCost)}</div>
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4">
+          <div className="text-[11px] sm:text-xs text-gray-400 uppercase tracking-wide mb-1">总成本</div>
+          <div className="text-base sm:text-xl font-bold text-gray-900">{fmt(totalCost)}</div>
         </div>
         <div className={`rounded-xl border shadow-sm p-4 ${
           mNav > 0 && costNav > 0
@@ -771,13 +773,13 @@ export default function FundDetail() {
             <div className="text-xl font-bold text-gray-400">-</div>
           )}
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4">
           <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">累计盈亏</div>
           <div className={`text-xl font-bold ${totalGain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             {totalGain >= 0 ? '+' : ''}{fmt(totalGain)}
           </div>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4">
           <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">收益率</div>
           <div className={`text-xl font-bold ${totalGain >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             {pct(totalCost > 0 ? (totalGain / totalCost) * 100 : 0)}
@@ -829,7 +831,7 @@ export default function FundDetail() {
         const totalCostDrop = chartData.reduce((s, d) => s + (d.costChange < 0 ? d.costChange : 0), 0)
 
         return (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center">
@@ -929,7 +931,7 @@ export default function FundDetail() {
       })()}
 
       {/* 明日行情预测 */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
         <div className="flex items-center gap-2.5 mb-3">
           <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
             <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
@@ -1005,7 +1007,7 @@ export default function FundDetail() {
             {/* 因子分解 */}
             <div>
               <div className="text-xs text-gray-400 mb-2">预测因子分解</div>
-              <div className="grid grid-cols-4 lg:grid-cols-7 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 sm:gap-2">
                 {Object.entries(forecast.factors).map(([key, f]) => (
                   <div key={key} className="text-center p-2 rounded-lg bg-gray-50">
                     <div className="text-[10px] text-gray-400 mb-0.5">{f.label}</div>
@@ -1018,10 +1020,10 @@ export default function FundDetail() {
             </div>
 
             {/* 近20日统计 + 预测理由 */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
               <div className="rounded-lg bg-gray-50 p-3">
                 <div className="text-xs text-gray-400 mb-1.5">近20日统计</div>
-                <div className="flex gap-4 text-xs">
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
                   <div><span className="text-red-600 font-medium">{forecast.stats.recent20.upDays}涨</span> / <span className="text-green-600 font-medium">{forecast.stats.recent20.downDays}跌</span></div>
                   <div>日均涨 <span className="text-red-600 font-mono">+{forecast.stats.recent20.avgUp.toFixed(2)}%</span></div>
                   <div>日均跌 <span className="text-green-600 font-mono">{forecast.stats.recent20.avgDown.toFixed(2)}%</span></div>
@@ -1046,7 +1048,7 @@ export default function FundDetail() {
       </div>
 
       {/* 实时净值快速决策 */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
         <div className="flex items-center gap-2.5 mb-3">
           <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
             <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
@@ -1056,8 +1058,8 @@ export default function FundDetail() {
             <p className="text-xs text-gray-400">输入实时净值 → 技术面+基本面+消息面综合分析 → 具体买卖份额</p>
           </div>
         </div>
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
+        <div className="flex flex-wrap sm:flex-nowrap gap-2 items-end">
+          <div className="flex-1 min-w-[120px]">
             <div className="relative">
               <span className="absolute left-3 top-2 text-gray-400 text-sm">¥</span>
               <input
@@ -1149,32 +1151,24 @@ export default function FundDetail() {
               {decision.cycle && (
                 <div className="mt-3 pt-3 border-t border-dashed" style={{ borderColor: decision.action === 'buy' ? '#a7f3d0' : '#fecaca' }}>
                   <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">完整循环（高卖低买 = 真降成本）</div>
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-3 gap-1.5 sm:flex sm:items-center sm:gap-2">
                     {/* Step 1 */}
-                    <div className={`flex-1 rounded-lg p-2 text-center ${decision.action === 'sell' ? 'bg-red-100/80 ring-2 ring-red-300' : 'bg-emerald-100/80 ring-2 ring-emerald-300'}`}>
-                      <div className="text-[10px] text-gray-500 mb-0.5">现在 · {decision.cycle.step1.action}</div>
-                      <div className="text-sm font-bold font-mono">{decision.cycle.step1.nav.toFixed(4)}</div>
-                      <div className="text-[10px] text-gray-600">{decision.cycle.step1.shares}份 · ¥{decision.cycle.step1.amount}</div>
-                    </div>
-                    {/* Arrow */}
-                    <div className="flex flex-col items-center shrink-0">
-                      <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
-                      <div className="text-[9px] text-gray-400">等待</div>
+                    <div className={`rounded-lg p-2 text-center sm:flex-1 ${decision.action === 'sell' ? 'bg-red-100/80 ring-2 ring-red-300' : 'bg-emerald-100/80 ring-2 ring-emerald-300'}`}>
+                      <div className="text-[9px] sm:text-[10px] text-gray-500 mb-0.5">现在 · {decision.cycle.step1.action}</div>
+                      <div className="text-xs sm:text-sm font-bold font-mono">{decision.cycle.step1.nav.toFixed(4)}</div>
+                      <div className="text-[9px] sm:text-[10px] text-gray-600">{decision.cycle.step1.shares}份</div>
                     </div>
                     {/* Step 2 */}
-                    <div className={`flex-1 rounded-lg p-2 text-center border-2 border-dashed ${decision.action === 'sell' ? 'border-emerald-300 bg-emerald-50/50' : 'border-red-300 bg-red-50/50'}`}>
-                      <div className="text-[10px] text-gray-500 mb-0.5">目标 · {decision.cycle.step2.action}</div>
-                      <div className="text-sm font-bold font-mono">{decision.cycle.step2.nav.toFixed(4)}</div>
-                      <div className="text-[10px] text-gray-600">{decision.cycle.step2.shares}份 · ¥{decision.cycle.step2.amount}</div>
+                    <div className={`rounded-lg p-2 text-center sm:flex-1 border-2 border-dashed ${decision.action === 'sell' ? 'border-emerald-300 bg-emerald-50/50' : 'border-red-300 bg-red-50/50'}`}>
+                      <div className="text-[9px] sm:text-[10px] text-gray-500 mb-0.5">目标 · {decision.cycle.step2.action}</div>
+                      <div className="text-xs sm:text-sm font-bold font-mono">{decision.cycle.step2.nav.toFixed(4)}</div>
+                      <div className="text-[9px] sm:text-[10px] text-gray-600">{decision.cycle.step2.shares}份</div>
                     </div>
                     {/* Result */}
-                    <div className="flex flex-col items-center shrink-0">
-                      <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4" /></svg>
-                    </div>
-                    <div className="flex-1 rounded-lg p-2 text-center bg-emerald-50 border border-emerald-200">
-                      <div className="text-[10px] text-emerald-600 mb-0.5">循环完成</div>
-                      <div className="text-sm font-black text-emerald-700">降 {decision.cycle.cycleCostDrop.toFixed(4)}</div>
-                      <div className="text-[10px] text-emerald-600">利润 ¥{decision.cycle.cycleProfit} · 新成本 {decision.cycle.newCostNavAfterCycle.toFixed(4)}</div>
+                    <div className="rounded-lg p-2 text-center sm:flex-1 bg-emerald-50 border border-emerald-200">
+                      <div className="text-[9px] sm:text-[10px] text-emerald-600 mb-0.5">循环完成</div>
+                      <div className="text-xs sm:text-sm font-black text-emerald-700">降 {decision.cycle.cycleCostDrop.toFixed(4)}</div>
+                      <div className="text-[9px] sm:text-[10px] text-emerald-600">利润 ¥{decision.cycle.cycleProfit}</div>
                     </div>
                   </div>
                 </div>
@@ -1203,7 +1197,7 @@ export default function FundDetail() {
 
             {/* 大师策略指标 */}
             {decision.masterSignals && (
-              <div className="grid grid-cols-5 gap-2 mb-4">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-4">
                 <div className="bg-white rounded-lg border border-gray-200 p-2 text-center">
                   <div className="text-[10px] text-gray-400">恐惧/贪婪</div>
                   <div className={`text-lg font-black ${decision.masterSignals.fearGreed < 30 ? 'text-emerald-600' : decision.masterSignals.fearGreed > 70 ? 'text-red-600' : 'text-amber-600'}`}>
@@ -1241,7 +1235,7 @@ export default function FundDetail() {
             )}
 
             {/* 三维评分条 */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-4">
               {[
                 { label: '技术面(60%)', score: decision.dimensions.technical.score, color: 'blue', detail: `RSI ${decision.dimensions.technical.rsi.toFixed(0)} · ${decision.dimensions.technical.trend === 'strong_up' ? '强势' : decision.dimensions.technical.trend === 'up' ? '偏多' : decision.dimensions.technical.trend === 'down' ? '偏空' : decision.dimensions.technical.trend === 'strong_down' ? '弱势' : '震荡'}` },
                 { label: '基本面(20%)', score: decision.dimensions.fundamental.score, color: 'purple', detail: decision.dimensions.fundamental.highlights[0] || '数据正常' },
@@ -1270,7 +1264,7 @@ export default function FundDetail() {
               {/* 持仓概况 */}
               <div className="bg-gray-50 rounded-lg p-3">
                 <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2">当前持仓</div>
-                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-[11px]">
+                <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
                   <div><div className="text-gray-400">总份额</div><div className="font-bold text-gray-800">{decision.position.holdingShares}</div></div>
                   <div><div className="text-gray-400">成本净值</div><div className="font-bold text-gray-800 font-mono">{decision.position.costNav.toFixed(4)}</div></div>
                   <div><div className="text-gray-400">盈亏</div><div className={`font-bold ${decision.position.gainPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{decision.position.gainPct >= 0 ? '+' : ''}{decision.position.gainPct.toFixed(2)}%</div></div>
@@ -1332,7 +1326,7 @@ export default function FundDetail() {
               )}
 
               {/* 基本面 + 消息面摘要 */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
                 <div className="bg-white rounded-lg border border-gray-200 p-3">
                   <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">基本面（权重20%）</div>
                   <div className={`text-sm font-bold mb-1 ${decision.dimensions.fundamental.score >= 20 ? 'text-emerald-600' : decision.dimensions.fundamental.score <= -20 ? 'text-red-600' : 'text-amber-600'}`}>
@@ -1362,7 +1356,7 @@ export default function FundDetail() {
               {decision.riskWarnings && (
                 <div className="bg-red-50/50 rounded-lg border border-red-100 p-3">
                   <div className="text-[10px] font-semibold text-red-400 uppercase tracking-wide mb-2">风险提示</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
                     {decision.riskWarnings.worstCaseLoss > 0 && (
                       <div><span className="text-gray-400">最坏损失</span><div className="font-bold text-red-600">{fmt(decision.riskWarnings.worstCaseLoss)}</div></div>
                     )}

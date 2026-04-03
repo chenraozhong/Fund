@@ -110,19 +110,20 @@ export default function Dashboard() {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">总览</h1>
-        <div className="flex items-center gap-3">
-          {refreshResult && <span className="text-sm text-green-600">{refreshResult}</span>}
+        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">总览</h1>
+        <div className="flex items-center gap-2 sm:gap-3">
+          {refreshResult && <span className="text-xs sm:text-sm text-green-600 hidden sm:inline">{refreshResult}</span>}
           <button
             onClick={handleRefreshNav}
             disabled={refreshing}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 text-sm font-medium transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 text-xs sm:text-sm font-medium transition-colors disabled:opacity-50"
           >
             <svg className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
             {refreshing ? '刷新中...' : '刷新净值'}
           </button>
         </div>
       </div>
+      {refreshResult && <div className="sm:hidden text-xs text-green-600">{refreshResult}</div>}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="总市值" value={fmt(totalValue)} />
@@ -137,7 +138,7 @@ export default function Dashboard() {
       </div>
 
       {/* 全局决策面板 */}
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-lg shadow p-3 sm:p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -171,22 +172,22 @@ export default function Dashboard() {
               ? (est.prevNav > 0 ? ((est.officialNav - est.prevNav) / est.prevNav) * 100 : 0)
               : (est ? est.gszzl : 0)
             return (
-              <div key={fundId} className="bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3.5 transition-colors cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : fundId)}>
+              <div key={fundId} className="bg-gray-50/50 hover:bg-gray-50 rounded-xl p-3 sm:p-3.5 transition-colors cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : fundId)}>
                 {/* 主行：基金名 + 核心数据 + 预测/建议 */}
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 sm:gap-3">
                   {/* 左：基金 */}
                   <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: fundColor }} />
+                    <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full shrink-0" style={{ backgroundColor: fundColor }} />
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium text-sm text-gray-900 truncate">{fundName}</span>
-                        {fundCode && <span className="text-[11px] text-gray-400 shrink-0">{fundCode}</span>}
+                      <div className="flex items-center gap-1">
+                        <span className="font-medium text-xs sm:text-sm text-gray-900 truncate">{fundName}</span>
+                        {fundCode && <span className="text-[10px] sm:text-[11px] text-gray-400 shrink-0 hidden sm:inline">{fundCode}</span>}
                       </div>
-                      <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                      <div className="flex items-center gap-1.5 sm:gap-2 mt-0.5 text-[11px] sm:text-xs text-gray-500">
                         <span className="font-mono">{displayNav > 0 ? displayNav.toFixed(4) : '-'}</span>
                         {displayNav > 0 && <span className={`font-medium ${displayChangePct >= 0 ? 'text-red-500' : 'text-green-600'}`}>{displayChangePct >= 0 ? '+' : ''}{displayChangePct.toFixed(2)}%</span>}
                         {published && <span className="text-[10px] text-blue-500">净值</span>}
-                        {!published && est?.gztime && <span className="text-[10px] text-gray-400">{est.gztime.slice(11, 16)}</span>}
+                        {!published && est?.gztime && <span className="text-[10px] text-gray-400 hidden sm:inline">{est.gztime.slice(11, 16)}</span>}
                       </div>
                     </div>
                   </div>
@@ -198,9 +199,9 @@ export default function Dashboard() {
                   </div>
 
                   {/* 右：预测 */}
-                  <div className="shrink-0 w-20 text-center">
+                  <div className="shrink-0 w-16 sm:w-20 text-center">
                     {fc ? (
-                      <span className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-lg text-xs font-bold ${
+                      <span className={`inline-flex items-center gap-0.5 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-lg text-[11px] sm:text-xs font-bold ${
                         fc.direction === 'up' ? 'bg-red-50 text-red-600' :
                         fc.direction === 'down' ? 'bg-green-50 text-green-600' :
                         'bg-gray-100 text-gray-500'
@@ -209,27 +210,27 @@ export default function Dashboard() {
                         {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
                       </span>
                     ) : forecastsLoading ? (
-                      <span className="text-xs text-gray-400 animate-pulse">预测中</span>
-                    ) : <span className="text-xs text-gray-400">-</span>}
+                      <span className="text-[11px] sm:text-xs text-gray-400 animate-pulse">预测中</span>
+                    ) : <span className="text-[11px] sm:text-xs text-gray-400">-</span>}
                   </div>
 
                   {/* 右：决策 */}
-                  <div className="shrink-0 w-24 text-right">
+                  <div className="shrink-0 w-14 sm:w-24 text-right">
                     {d ? (
                       <div>
-                        <span className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold ${
+                        <span className={`inline-flex items-center px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-lg text-[11px] sm:text-xs font-bold ${
                           d.action === 'buy' ? 'bg-emerald-100 text-emerald-700' :
                           d.action === 'sell' ? 'bg-red-100 text-red-700' :
                           'bg-gray-100 text-gray-600'
                         }`}>
                           {d.action === 'buy' ? '买入' : d.action === 'sell' ? '卖出' : '持有'}
                         </span>
-                        {d.amount > 0 && <div className={`text-xs mt-0.5 font-medium ${d.action === 'buy' ? 'text-emerald-700' : 'text-red-700'}`}>{fmt(d.amount)}</div>}
+                        {d.amount > 0 && <div className={`text-[11px] sm:text-xs mt-0.5 font-medium hidden sm:block ${d.action === 'buy' ? 'text-emerald-700' : 'text-red-700'}`}>{fmt(d.amount)}</div>}
                       </div>
-                    ) : <span className="text-xs text-gray-400 animate-pulse">分析中</span>}
+                    ) : <span className="text-[11px] sm:text-xs text-gray-400 animate-pulse">分析中</span>}
                   </div>
 
-                  <svg className={`w-4 h-4 text-gray-300 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                  <svg className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-300 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                 </div>
 
                 {/* 展开详情 */}
@@ -263,7 +264,7 @@ export default function Dashboard() {
 
       {/* 预测复盘面板 */}
       {reviewSummary && reviewSummary.stats.total > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
+        <div className="bg-white rounded-lg shadow p-3 sm:p-6">
           <div className="flex items-center justify-between mb-4 cursor-pointer" onClick={() => setShowReview(!showReview)}>
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
@@ -274,13 +275,14 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-400">近{reviewSummary.days}天预测准确率统计与因子分析</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-4 text-sm">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="hidden sm:flex items-center gap-4 text-sm">
                 <span className="text-gray-500">准确率 <span className={`font-bold ${reviewSummary.stats.accuracy >= 60 ? 'text-green-600' : reviewSummary.stats.accuracy >= 40 ? 'text-amber-600' : 'text-red-600'}`}>{reviewSummary.stats.accuracy}%</span></span>
                 <span className="text-gray-500">区间命中 <span className="font-bold text-blue-600">{reviewSummary.stats.inRangePct}%</span></span>
                 <span className="text-gray-500">平均误差 <span className="font-bold text-gray-700">{reviewSummary.stats.avgError.toFixed(2)}%</span></span>
                 <span className="text-gray-400">{reviewSummary.stats.correct}/{reviewSummary.stats.total}次</span>
               </div>
+              <span className="sm:hidden text-xs text-gray-500">准确率 <span className={`font-bold ${reviewSummary.stats.accuracy >= 60 ? 'text-green-600' : reviewSummary.stats.accuracy >= 40 ? 'text-amber-600' : 'text-red-600'}`}>{reviewSummary.stats.accuracy}%</span></span>
               <svg className={`w-4 h-4 text-gray-400 transition-transform ${showReview ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </div>
           </div>
@@ -341,7 +343,7 @@ export default function Dashboard() {
                             {r.direction_correct ? '正确' : '错误'}
                           </span>
                         </div>
-                        <div className="flex gap-3 text-gray-500 mb-1">
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-gray-500 mb-1">
                           <span>预测: <span className={r.predicted_change_pct >= 0 ? 'text-red-600' : 'text-green-600'}>{r.predicted_change_pct >= 0 ? '+' : ''}{r.predicted_change_pct.toFixed(2)}%</span></span>
                           <span>实际: <span className={r.actual_change_pct >= 0 ? 'text-red-600' : 'text-green-600'}>{r.actual_change_pct >= 0 ? '+' : ''}{r.actual_change_pct.toFixed(2)}%</span></span>
                           <span>误差: {r.error_pct.toFixed(2)}%</span>
