@@ -9,7 +9,7 @@ const router = Router();
 // 模型版本号
 // ============================================================
 const FORECAST_MODEL_VERSION = 'v7.5';  // 预测模型版本（v7.5: 港股休市+黄金专属因子+地缘衰减）
-const DECISION_MODEL_VERSION = 'v7.4';  // 决策模型版本（v7.4: 熊市防御 — 熔断状态机+现金底线+地缘主动卖出+避险豁免+赎回时滞）
+const DECISION_MODEL_VERSION = 'v7.5';  // 决策模型版本（v7.5: 修复6大漏洞 — 熔断主动卖出+euphoria避险豁免+capitulation门槛+冷却期+组合防御+越跌越买限制）
 
 // ============================================================
 // v7.0 工具函数
@@ -47,6 +47,45 @@ function getCircuitBreakerHistory(): { lastTriggeredDate: string | null; level: 
 /** [v7.4] 判断是否为避险资产(黄金类) */
 function isHedgeAsset(fundName: string): boolean {
   return /黄金|gold/i.test(fundName);
+}
+
+/** [v7.5] 最近N天内同基金的卖出决策次数（冷却期用） */
+function getRecentSellCount(fundId: number | string, days: number = 5): number {
+  const since = new Date(); since.setDate(since.getDate() - days);
+  const row = db.prepare(
+    "SELECT COUNT(*) as cnt FROM decision_logs WHERE fund_id = ? AND action = 'sell' AND date >= ?"
+  ).get(fundId, since.toISOString().slice(0, 10)) as any;
+  return row?.cnt || 0;
+}
+
+/** [v7.5] 最近N天内同基金的买入决策次数 */
+function getRecentBuyCount(fundId: number | string, days: number = 7): number {
+  const since = new Date(); since.setDate(since.getDate() - days);
+  const row = db.prepare(
+    "SELECT COUNT(*) as cnt FROM decision_logs WHERE fund_id = ? AND action = 'buy' AND date >= ?"
+  ).get(fundId, since.toISOString().slice(0, 10)) as any;
+  return row?.cnt || 0;
+}
+
+/** [v7.5] 组合级系统性风险检测：>60%基金亏>10%时触发 */
+function isSystemicCrisis(): boolean {
+  const rows = db.prepare(`
+    SELECT f.id,
+      COALESCE(SUM(CASE WHEN t.type='buy' THEN t.shares*t.price ELSE 0 END),0) -
+      COALESCE(SUM(CASE WHEN t.type='sell' THEN t.shares*t.price ELSE 0 END),0) +
+      COALESCE(SUM(CASE WHEN t.type='dividend' THEN t.price ELSE 0 END),0) as cost,
+      COALESCE(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END),0) -
+      COALESCE(SUM(CASE WHEN t.type='sell' THEN t.shares ELSE 0 END),0) as shares,
+      f.market_nav
+    FROM funds f LEFT JOIN transactions t ON t.fund_id = f.id
+    WHERE f.deleted_at IS NULL GROUP BY f.id HAVING shares > 0
+  `).all() as any[];
+  if (rows.length < 3) return false;
+  const losing = rows.filter(r => {
+    const mv = r.shares * (r.market_nav || 0);
+    return r.cost > 0 && mv > 0 && ((r.cost - mv) / r.cost * 100) > 10;
+  });
+  return losing.length / rows.length > 0.6;
 }
 /** 组合总市值 */
 function getPortfolioValue(): number {
@@ -1774,11 +1813,21 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
 
     // [v7 卖出精简] 趋势中仅2层(trailing stop + 反转), 非趋势保留网格
     if (cyclePhase === 'euphoria' && swingShares > 0) {
-      // 层1: 极端过热 — 所有模式都卖
-      action = 'sell';
-      opShares = r4(swingShares * 0.85 * Math.min(contrarian, 2.0) * sellCaution);
-      confidence = 85; urgency = 'high';
-      reasoning.push(`[Marks] 周期过热（RSI ${technical.rsi14.toFixed(0)}），减仓${Math.round(85 * sellCaution)}%活仓`);
+      // 层1: 极端过热
+      // [v7.5 P0-2] 避险资产+地缘恐慌时 euphoria 降级处理（黄金不应因技术超买被大幅卖出）
+      const isHedgeEuphoria = isHedgeAsset(fund.name);
+      const geoFearEuphoria = geoRisk && geoRisk.riskScore <= -20;
+      if (isHedgeEuphoria && geoFearEuphoria) {
+        action = 'sell';
+        opShares = r4(swingShares * 0.15 * sellCaution);
+        confidence = 60; urgency = 'low';
+        reasoning.push(`[v7.5避险豁免] 黄金过热（RSI ${technical.rsi14.toFixed(0)}）但地缘恐慌(${geoRisk!.riskScore})中，仅象征性止盈15%保留避险`);
+      } else {
+        action = 'sell';
+        opShares = r4(swingShares * 0.85 * Math.min(contrarian, 2.0) * sellCaution);
+        confidence = 85; urgency = 'high';
+        reasoning.push(`[Marks] 周期过热（RSI ${technical.rsi14.toFixed(0)}），减仓${Math.round(85 * sellCaution)}%活仓`);
+      }
 
     } else if (profitPct >= stopProfit && swingShares > 0) {
       // 层2: 硬止盈线
@@ -1890,25 +1939,46 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
       confidence = 60; urgency = 'high';
       reasoning.push(`[底仓熔断] 亏${lossPct.toFixed(1)}%+基本面恶化（${fundScore.score}分），减30%底仓`);
 
-    // [v7 分级熔断] reduce/review级别→暂停买入
+    // [v7.5 P0-3] 分级熔断: review/reduce 主动卖出（不再只hold）
+    } else if (cbLevel === 'reduce' && swingShares > 0) {
+      action = 'sell';
+      opShares = r4(swingShares * 0.4 * sellCaution);
+      confidence = 75; urgency = 'high';
+      reasoning.push(`[v7.5熔断-减仓] 亏${totalLossPct.toFixed(1)}%>20%，主动减仓40%活仓`);
+    } else if (cbLevel === 'review' && swingShares > 0 && compositeScore < -5) {
+      // review级：仅在信号偏空(score<-5)时卖出20%活仓，中性以上hold观望
+      action = 'sell';
+      opShares = r4(swingShares * 0.2 * sellCaution);
+      confidence = 65; urgency = 'medium';
+      reasoning.push(`[v7.5熔断-审查] 亏${totalLossPct.toFixed(1)}%>15%+信号偏空(${compositeScore})，减仓20%活仓`);
     } else if (cbLevel === 'reduce' || cbLevel === 'review') {
       action = 'hold'; confidence = 70; urgency = 'high';
-      reasoning.push(`[v7熔断-${cbLevel === 'reduce' ? '减仓' : '审查'}] 总亏损${totalLossPct.toFixed(1)}%>${cbLevel === 'reduce' ? '20' : '15'}%，暂停买入`);
+      reasoning.push(`[v7.5熔断-${cbLevel}] 亏${totalLossPct.toFixed(1)}%，暂停买入观望`);
 
-    // [索罗斯修正] Capitulation分步建仓：先30%试探
-    } else if (cyclePhase === 'capitulation') {
+    // [v7.5 P0-1] Capitulation分步建仓：增加compositeScore门槛，不再无条件买入
+    } else if (cyclePhase === 'capitulation' && compositeScore >= modelCfg.lossBuyFloor && (fundScore.score >= 0 || compositeScore >= -5)) {
       action = 'buy';
-      const fullAmount = Math.round(rawBase * cycleMultiplier.capitulation * contrarian * buyConviction * valueMultiplier * bf);
+      // [v7.5] 深亏>12%时cap valueMultiplier到1.2，防止越跌越买
+      const cappedVM = lossPct > 12 ? Math.min(valueMultiplier, 1.2) : valueMultiplier;
+      const fullAmount = Math.round(rawBase * cycleMultiplier.capitulation * contrarian * buyConviction * cappedVM * bf);
       opAmount = Math.round(fullAmount * 0.3);
       opShares = r4(opAmount / nav);
       confidence = Math.min(70 + lossConfBoost, 85); urgency = 'high';
-      reasoning.push(`[Soros试探] 恐慌探底，先投30%试探（¥${opAmount}/${fullAmount}），确认反转再加仓`);
-    } else if (cyclePhase === 'early_recovery') {
+      reasoning.push(`[Soros试探] 恐慌探底+信号${compositeScore}>=${modelCfg.lossBuyFloor}，先投30%试探（¥${opAmount}/${fullAmount}）`);
+    } else if (cyclePhase === 'capitulation') {
+      // compositeScore太低或基本面差 → 不买入
+      action = 'hold'; confidence = 50; urgency = 'medium';
+      reasoning.push(`[v7.5反陷阱] 恐慌探底但信号过弱(${compositeScore})或基本面差(${fundScore.score})，不抄底`);
+    } else if (cyclePhase === 'early_recovery' && compositeScore >= modelCfg.lossBuyFloor) {
       action = 'buy';
-      opAmount = Math.round(rawBase * cycleMultiplier.early_recovery * valueMultiplier * buyConviction * bf * 0.7);
+      const cappedVM = lossPct > 12 ? Math.min(valueMultiplier, 1.2) : valueMultiplier;
+      opAmount = Math.round(rawBase * cycleMultiplier.early_recovery * cappedVM * buyConviction * bf * 0.7);
       opShares = r4(opAmount / nav);
       confidence = Math.min(75 + lossConfBoost, 90); urgency = 'high';
-      reasoning.push(`[Marks确认] 复苏信号确认，加仓70%，乘数${valueMultiplier.toFixed(1)}x`);
+      reasoning.push(`[Marks确认] 复苏信号确认+信号${compositeScore}>=${modelCfg.lossBuyFloor}，加仓70%`);
+    } else if (cyclePhase === 'early_recovery') {
+      action = 'hold'; confidence = 50; urgency = 'medium';
+      reasoning.push(`[v7.5反陷阱] 早期复苏但信号过弱(${compositeScore})，观望不追`);
     } else if (compositeScore >= 0) {
       action = 'buy';
       opAmount = Math.round(rawBase * valueMultiplier * buyConviction * cycleMultiplier[cyclePhase] * bf);
@@ -1996,10 +2066,34 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   }
 
   // [v7.4 盲区2补充] 现金占比低时缩减买入
-  if (action === 'buy' && opAmount > 0 && cashReserveLow && modelCfg.id === 'v7.4') {
+  if (action === 'buy' && opAmount > 0 && cashReserveLow) {
     opShares = r4(opShares * 0.5);
     opAmount = Math.round(opShares * nav);
     reasoning.push(`[v7.4集中度] 该基金占组合>15%，买入缩减50%分散风险`);
+  }
+
+  // [v7.5 P1] 卖出冷却期：5天内同基金sell不超2次
+  if (action === 'sell' && opShares > 0) {
+    const recentSells = getRecentSellCount(fundId, 5);
+    if (recentSells >= 2) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[v7.5冷却] 近5天已卖出${recentSells}次，暂停止盈等待新信号`);
+    }
+  }
+
+  // [v7.5 P1] 买入冷却期：7天内同基金buy不超3次
+  if (action === 'buy' && opAmount > 0) {
+    const recentBuys = getRecentBuyCount(fundId, 7);
+    if (recentBuys >= 3) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[v7.5冷却] 7天内已买入${recentBuys}次，暂停补仓避免过度集中`);
+    }
+  }
+
+  // [v7.5 P1] 组合级系统性危机检测：>60%基金亏>10%时全局禁buy
+  if (action === 'buy' && opAmount > 0 && isSystemicCrisis()) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[v7.5组合防御] 超60%基金亏损>10%，系统性危机模式，全局暂停买入`);
   }
 
   // === 预测整合（v6新增：决策与预测模型联动）===
