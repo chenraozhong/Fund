@@ -8,8 +8,53 @@ const router = Router();
 // ============================================================
 // 模型版本号
 // ============================================================
-const FORECAST_MODEL_VERSION = 'v6.2';  // 预测模型版本（12因子+地缘风险+回归抑制+ATR2.5x）
-const DECISION_MODEL_VERSION = 'v6.2';  // 决策模型版本（v6.2反思: 预测跌>1%拦截+布林%B>85拦截+地缘恐慌缩减+盈利趋势崩坏拦截）
+const FORECAST_MODEL_VERSION = 'v7.4';  // 预测模型版本（v7.4: 继承v7.3混合架构）
+const DECISION_MODEL_VERSION = 'v7.4';  // 决策模型版本（v7.4: 熊市防御 — 熔断状态机+现金底线+地缘主动卖出+避险豁免+赎回时滞）
+
+// ============================================================
+// v7.0 工具函数
+// ============================================================
+/** sigmoid软化: 硬阈值→连续衰减, center=阈值中心, steepness=陡峭度 */
+function sigmoid(x: number, center: number, steepness: number = 0.15): number {
+  return 1 / (1 + Math.exp(-steepness * (x - center)));
+}
+/** 组合级风控: 查询今日已执行的买入总额 */
+function getTodayBuyTotal(): number {
+  const today = new Date().toISOString().slice(0, 10);
+  const row = db.prepare(
+    "SELECT COALESCE(SUM(shares * price), 0) as total FROM transactions WHERE type = 'buy' AND date = ?"
+  ).get(today) as any;
+  return row?.total || 0;
+}
+/** [v7.4] 组合总现金(未投资金额估算: 总成本 - 总市值的差额不算, 用总成本的剩余比) */
+function getPortfolioCash(): number {
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type='buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type='sell' THEN shares * price ELSE 0 END), 0) as total_cost
+    FROM transactions t JOIN funds f ON t.fund_id = f.id WHERE f.deleted_at IS NULL
+  `).get() as any;
+  return row?.total_cost || 0;
+}
+/** [v7.4] 熔断状态机: 查询最近一次熔断触发记录 */
+function getCircuitBreakerHistory(): { lastTriggeredDate: string | null; level: string | null } {
+  const row = db.prepare(
+    "SELECT date, json_extract(reasoning, '$[0]') as reason FROM decision_logs WHERE reasoning LIKE '%熔断%' ORDER BY date DESC LIMIT 1"
+  ).get() as any;
+  if (!row) return { lastTriggeredDate: null, level: null };
+  return { lastTriggeredDate: row.date, level: row.reason?.includes('危急') ? 'critical' : 'review' };
+}
+/** [v7.4] 判断是否为避险资产(黄金类) */
+function isHedgeAsset(fundName: string): boolean {
+  return /黄金|gold/i.test(fundName);
+}
+/** 组合总市值 */
+function getPortfolioValue(): number {
+  const row = db.prepare(
+    "SELECT COALESCE(SUM(CASE WHEN market_nav > 0 THEN (SELECT (COALESCE(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END),0) - COALESCE(SUM(CASE WHEN type='sell' THEN shares ELSE 0 END),0)) FROM transactions WHERE fund_id = funds.id) * market_nav ELSE 0 END), 0) as total FROM funds WHERE deleted_at IS NULL"
+  ).get() as any;
+  return row?.total || 0;
+}
 
 // ============================================================
 // Types
@@ -1352,8 +1397,80 @@ router.get('/funds/:id/swing', async (req: Request, res: Response) => {
 //   买入 → 预设卖出价和份额 → 算循环完成后的成本降幅
 // ============================================================
 
+// ============================================================
+// 模型版本配置
+// ============================================================
+type ModelVersionId = 'v6.2' | 'v7.2' | 'v7.3' | 'v7.4';
+interface ModelConfig {
+  id: ModelVersionId;
+  label: string;
+  description: string;
+  // 预测层
+  streakTrending5: number;   // 趋势中连涨5+倍数
+  streakTrending3: number;
+  streakOther5: number;      // 非趋势连涨5+倍数
+  streakOther3: number;
+  atrLimitTrending: number;  // 趋势ATR限幅
+  atrLimitDefault: number;
+  // 决策层
+  useSigmoid: boolean;       // sigmoid软化 vs 硬阈值
+  trendModeThreshold: number; // 趋势模式compositeScore门槛
+  lossBuyFloor: number;      // 亏损时最低买入compositeScore (-20=v6.2, -15=v7)
+  circuitBreakerMode: 'single' | 'tiered'; // 单级25% vs 分级15/20/25%
+  hasDailyBuyLimit: boolean; // 组合级日买入限额
+  trailingDdSell: boolean;   // trailing drawdown卖出
+  dynamicTPTrendMult: number; // 趋势止盈ATR倍数 (3=v6.2, 5=v7)
+}
+
+const MODEL_CONFIGS: Record<ModelVersionId, ModelConfig> = {
+  'v6.2': {
+    id: 'v6.2', label: 'v6.2 防御优先', description: '硬阈值拦截, 低回撤, 12因子+五维防御',
+    streakTrending5: 0.35, streakTrending3: 0.87,
+    streakOther5: 0.35, streakOther3: 0.87,
+    atrLimitTrending: 2.5, atrLimitDefault: 2.5,
+    useSigmoid: false, trendModeThreshold: 999, // 不启用趋势模式
+    lossBuyFloor: -30, circuitBreakerMode: 'single',
+    hasDailyBuyLimit: false, trailingDdSell: false, dynamicTPTrendMult: 3,
+  },
+  'v7.2': {
+    id: 'v7.2', label: 'v7.2 进攻型', description: 'sigmoid软化, 趋势加速, 收益最高但回撤较大',
+    streakTrending5: 1.20, streakTrending3: 1.08,
+    streakOther5: 0.55, streakOther3: 0.87,
+    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
+    useSigmoid: true, trendModeThreshold: 15,
+    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
+    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
+  },
+  'v7.3': {
+    id: 'v7.3', label: 'v7.3 均衡冠军', description: '混合架构(sigmoid+硬底线), 卡尔玛3.05最优',
+    streakTrending5: 1.20, streakTrending3: 1.08,
+    streakOther5: 0.35, streakOther3: 0.80,  // 非趋势恢复v6.2强衰减
+    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
+    useSigmoid: true, trendModeThreshold: 15,
+    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
+    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
+  },
+  'v7.4': {
+    id: 'v7.4', label: 'v7.4 熊市防御', description: '混合架构+熔断状态机+现金底线+地缘主动卖出+避险豁免',
+    streakTrending5: 1.20, streakTrending3: 1.08,
+    streakOther5: 0.35, streakOther3: 0.80,
+    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
+    useSigmoid: true, trendModeThreshold: 15,
+    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
+    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
+  },
+};
+
+const DEFAULT_MODEL: ModelVersionId = 'v7.4';
+
+// 获取可用模型列表（供前端）
+function getAvailableModels() {
+  return Object.values(MODEL_CONFIGS).map(m => ({ id: m.id, label: m.label, description: m.description }));
+}
+
 // 完整决策引擎核心函数（单基金）
-async function computeDecision(fundId: number | string, realtimeNav: number): Promise<any> {
+async function computeDecision(fundId: number | string, realtimeNav: number, modelVersion?: ModelVersionId): Promise<any> {
+  const modelCfg = MODEL_CONFIGS[modelVersion || DEFAULT_MODEL] || MODEL_CONFIGS[DEFAULT_MODEL];
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
   if (!fund) throw new Error('基金不存在');
 
@@ -1573,15 +1690,55 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
   const FEE_REDEEM_CYCLE = redeemFeeLevels.length > 0
     ? getRedeemFeeRate(redeemFeeLevels, 30) : 0.005;
 
-  // === E4. 总亏损熔断 [巴菲特+达利欧修正] ===
+  // === E4. 分级熔断 [v7.4: 有记忆的状态机] ===
   const totalLossPct = totalCost > 0 ? Math.max(0, (totalCost - marketValue) / totalCost * 100) : 0;
-  let circuitBreaker = false;
-  if (totalLossPct > 25) {
-    circuitBreaker = true; // 总亏损超25%，暂停所有买入
+  type CircuitBreakerLevel = 'none' | 'review' | 'reduce' | 'critical';
+  let cbLevel: CircuitBreakerLevel = 'none';
+  if (modelCfg.circuitBreakerMode === 'tiered') {
+    if (totalLossPct > 25) cbLevel = 'critical';
+    else if (totalLossPct > 20) cbLevel = 'reduce';
+    else if (totalLossPct > 15) cbLevel = 'review';
+
+    // [v7.4 盲区1修复] 熔断状态机有记忆: 曾触发过熔断→需连续恢复才解锁
+    // 防止假底反弹反复解锁买入
+    if (cbLevel === 'none' && modelCfg.id === 'v7.4') {
+      const cbHistory = getCircuitBreakerHistory();
+      if (cbHistory.lastTriggeredDate) {
+        const daysSinceCB = Math.round((Date.now() - new Date(cbHistory.lastTriggeredDate).getTime()) / 86400000);
+        // 熔断后需冷却10天且亏损<12%才完全解锁, 否则维持review
+        if (daysSinceCB < 10 || totalLossPct > 12) {
+          cbLevel = 'review';
+        }
+      }
+    }
+  } else {
+    if (totalLossPct > 25) cbLevel = 'review';
+  }
+
+  // === E5. 组合级风控 ===
+  let dailyBuyRemaining = Infinity;
+  let cashReserveLow = false;
+  if (modelCfg.hasDailyBuyLimit) {
+    const portfolioValue = getPortfolioValue();
+    const todayBuyTotal = getTodayBuyTotal();
+    const dailyBuyLimit = Math.max(portfolioValue * 0.10, 5000);
+    dailyBuyRemaining = Math.max(0, dailyBuyLimit - todayBuyTotal);
+    // [v7.4 盲区2修复] 现金占比下限: 已投资成本超过估算总资金80%时限制买入
+    // 用总成本作为已投入资金的代理指标
+    if (modelCfg.id === 'v7.4') {
+      const totalInvested = getPortfolioCash();
+      // 总投入>0时, 如果当前基金成本占总投入过高, 限制追加
+      if (totalInvested > 0 && totalCost > totalInvested * 0.15) {
+        // 单只基金占比>15%时, 买入缩减
+        cashReserveLow = true;
+      }
+    }
   }
 
   // === F. 动态止盈线 ===
-  const dynamicTakeProfit = Math.min(Math.max(atrPct * 3, 8), stopProfit);
+  const isTrending = technical.trend === 'strong_up' || technical.trend === 'up';
+  const trailingMult = isTrending ? modelCfg.dynamicTPTrendMult : 3;
+  const dynamicTakeProfit = Math.min(Math.max(atrPct * trailingMult, isTrending ? 15 : 8), stopProfit);
 
   // === G. 综合决策 ===
   let action: 'buy' | 'sell' | 'hold' = 'hold';
@@ -1615,36 +1772,71 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     const profitPct = gainPct;
     const bf = baseFactor;
 
+    // [v7 卖出精简] 趋势中仅2层(trailing stop + 反转), 非趋势保留网格
     if (cyclePhase === 'euphoria' && swingShares > 0) {
+      // 层1: 极端过热 — 所有模式都卖
       action = 'sell';
       opShares = r4(swingShares * 0.85 * Math.min(contrarian, 2.0) * sellCaution);
       confidence = 85; urgency = 'high';
-      reasoning.push(`[Marks] 周期过热（RSI ${technical.rsi14.toFixed(0)}），减仓${Math.round(85 * sellCaution)}%活仓（底仓${basePositionPct}%）`);
+      reasoning.push(`[Marks] 周期过热（RSI ${technical.rsi14.toFixed(0)}），减仓${Math.round(85 * sellCaution)}%活仓`);
 
     } else if (profitPct >= stopProfit && swingShares > 0) {
-      action = 'sell';
-      const ratio = (profitPct >= stopProfit * 1.5 ? 0.9 : 0.7) * sellCaution;
-      opShares = r4(swingShares * ratio);
-      confidence = 80; urgency = 'high';
-      reasoning.push(`盈利${profitPct.toFixed(1)}%达止盈线${stopProfit}%，止盈${Math.round(ratio * 100)}%活仓`);
+      // 层2: 硬止盈线
+      // [v7.4 盲区4修复] 避险资产(黄金)止盈豁免: 危机中不卖避险仓位
+      const isHedge = isHedgeAsset(fund.name);
+      const geoFear = geoRisk && geoRisk.riskScore <= -30;
+      if (isHedge && geoFear && modelCfg.id === 'v7.4') {
+        // 黄金+地缘恐慌 → 延迟止盈, 仅卖30%锁定部分利润
+        action = 'sell';
+        const ratio = 0.3 * sellCaution;
+        opShares = r4(swingShares * ratio);
+        confidence = 65; urgency = 'low';
+        reasoning.push(`[v7.4避险豁免] ${fund.name}为避险资产+地缘恐慌中，仅止盈30%保留避险仓位`);
+      } else {
+        action = 'sell';
+        const ratio = (profitPct >= stopProfit * 1.5 ? 0.9 : 0.7) * sellCaution;
+        opShares = r4(swingShares * ratio);
+        confidence = 80; urgency = 'high';
+        reasoning.push(`盈利${profitPct.toFixed(1)}%达止盈线${stopProfit}%，止盈${Math.round(ratio * 100)}%活仓`);
+      }
+
+    } else if (isTrending && swingShares > 0) {
+      // [v7.1 趋势模式] 增加trailing drawdown退出
+      if (compositeScore <= -10 && technical.macd.histogram < 0) {
+        action = 'sell';
+        const ratio = 0.5 * sellConviction * sellCaution;
+        opShares = r4(swingShares * ratio);
+        confidence = 70; urgency = 'high';
+        reasoning.push(`[v7趋势反转] 综合${compositeScore}转空+MACD死叉，卖出${Math.round(ratio * 100)}%活仓`);
+      } else if (riskMetrics.currentDrawdown > atrPct * 2) {
+        // [v7.1] trailing drawdown: 回撤>2倍ATR → 部分止盈保护利润
+        action = 'sell';
+        const ratio = 0.25 * sellCaution;
+        opShares = r4(swingShares * ratio);
+        confidence = 65; urgency = 'medium';
+        reasoning.push(`[v7.1 trailing] 趋势中回撤${riskMetrics.currentDrawdown.toFixed(1)}%>${(atrPct*2).toFixed(1)}%(2ATR)，保护性卖出25%活仓`);
+      } else if (technical.bollingerBands.percentB < 35 && compositeScore > 0) {
+        action = 'buy';
+        opAmount = Math.round(rawBase * 1.0 * buyConviction * bf); // v7.1: 1.2→1.0 更保守
+        opShares = r4(opAmount / nav);
+        confidence = 70; urgency = 'medium';
+        reasoning.push(`[v7趋势加仓] 趋势中回调（%B=${technical.bollingerBands.percentB.toFixed(0)}），加仓`);
+      } else {
+        action = 'hold'; confidence = 65;
+        reasoning.push(`[v7趋势持有] 趋势未反转，持有等待（利润${profitPct.toFixed(1)}%继续奔跑）`);
+      }
 
     } else if (profitPct >= dynamicTakeProfit && swingShares > 0) {
+      // 非趋势: trailing stop
       action = 'sell';
       const overPct = profitPct - dynamicTakeProfit;
       const ratio = Math.min(0.3 + Math.floor(overPct / 5) * 0.2, 0.8) * sellCaution;
       opShares = r4(swingShares * ratio);
       confidence = 70; urgency = 'medium';
-      reasoning.push(`[动态止盈] 盈利${profitPct.toFixed(1)}%达动态线${dynamicTakeProfit.toFixed(1)}%，阶梯卖${Math.round(ratio * 100)}%活仓`);
-
-    } else if (profitPct >= 3 && swingShares > 0 && (compositeScore <= 10 || cyclePhase === 'distribution')) {
-      action = 'sell';
-      const baseRatio = cyclePhase === 'distribution' ? 0.6 : Math.min(0.1 + Math.floor(profitPct / 3) * 0.1, 0.5);
-      const ratio = baseRatio * sellCaution;
-      opShares = r4(swingShares * ratio);
-      confidence = 60; urgency = cyclePhase === 'distribution' ? 'high' : 'low';
-      reasoning.push(`[网格止盈] 浮盈${profitPct.toFixed(1)}%${cyclePhase === 'distribution' ? '+ 派发期' : ''}，卖${Math.round(ratio * 100)}%活仓（底仓${basePositionPct}%）`);
+      reasoning.push(`[动态止盈] 盈利${profitPct.toFixed(1)}%达动态线${dynamicTakeProfit.toFixed(1)}%，卖${Math.round(ratio * 100)}%活仓`);
 
     } else if (compositeScore <= -10 && profitPct >= 1 && swingShares > 0) {
+      // 非趋势: 信号转空
       action = 'sell'; opShares = r4(swingShares * 0.4 * sellConviction * sellCaution);
       confidence = 65; urgency = 'medium';
       reasoning.push(`[Soros] 信号转空（${compositeScore}分），快速锁利`);
@@ -1652,11 +1844,10 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     } else if (cyclePhase === 'recovery' || cyclePhase === 'expansion') {
       if (technical.bollingerBands.percentB < 40 && compositeScore > 0) {
         action = 'buy';
-        // 底仓高→活仓少→更积极补充活仓
         opAmount = Math.round(rawBase * 1.0 * buyConviction * bf);
         opShares = r4(opAmount / nav);
         confidence = 65; urgency = 'medium';
-        reasoning.push(`[Livermore] 上升趋势回调（%B=${technical.bollingerBands.percentB.toFixed(0)}），加活仓${bf !== 1 ? `(底仓${basePositionPct}%→${bf}x)` : ''}`);
+        reasoning.push(`[Livermore] 上升趋势回调（%B=${technical.bollingerBands.percentB.toFixed(0)}），加活仓`);
       } else {
         action = 'hold'; confidence = 55;
         reasoning.push(`上升趋势中持有，等回调到布林中下轨再加仓`);
@@ -1672,29 +1863,41 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     const lossConfBoost = Math.min(Math.floor(lossPct / 5) * 5, 15);
     const bf = baseFactor;
 
-    // [索罗斯修正] 真正的卖出止损：超止损线+趋势strong_down+compositeScore极低→卖出活仓止损
-    if (lossPct > stopLoss && compositeScore < -30 && technical.trend === 'strong_down' && swingShares > 0) {
+    // [v7 分级熔断] critical→强制卖出50%活仓, reduce→暂停买入
+    if (cbLevel === 'critical' && swingShares > 0) {
       action = 'sell';
-      opShares = r4(swingShares * 0.3); // 卖30%活仓止损
+      opShares = r4(swingShares * 0.5);
+      confidence = 85; urgency = 'high';
+      reasoning.push(`[v7熔断-危急] 总亏损${totalLossPct.toFixed(1)}%>25%，强制卖出50%活仓止损`);
+
+    } else if (cbLevel === 'critical' && baseShares > 0) {
+      action = 'sell';
+      opShares = r4(baseShares * 0.3);
+      confidence = 80; urgency = 'high';
+      reasoning.push(`[v7熔断-危急] 总亏损${totalLossPct.toFixed(1)}%>25%且无活仓，减30%底仓`);
+
+    // [索罗斯修正] 真正的卖出止损：超止损线+趋势strong_down+compositeScore极低→卖出活仓止损
+    } else if (lossPct > stopLoss && compositeScore < -30 && technical.trend === 'strong_down' && swingShares > 0) {
+      action = 'sell';
+      opShares = r4(swingShares * 0.3);
       confidence = 65; urgency = 'high';
       reasoning.push(`[Soros止损] 亏${lossPct.toFixed(1)}%+趋势崩坏（${compositeScore}分），卖出30%活仓止损`);
 
     // [巴菲特修正] 底仓熔断：基本面极差+深亏→底仓也要减
     } else if (lossPct > 30 && fundScore.score < -20 && swingShares <= 0 && baseShares > 0) {
       action = 'sell';
-      opShares = r4(baseShares * 0.3); // 卖30%底仓
+      opShares = r4(baseShares * 0.3);
       confidence = 60; urgency = 'high';
       reasoning.push(`[底仓熔断] 亏${lossPct.toFixed(1)}%+基本面恶化（${fundScore.score}分），减30%底仓`);
 
-    // [达利欧修正] 总亏损熔断
-    } else if (circuitBreaker) {
+    // [v7 分级熔断] reduce/review级别→暂停买入
+    } else if (cbLevel === 'reduce' || cbLevel === 'review') {
       action = 'hold'; confidence = 70; urgency = 'high';
-      reasoning.push(`[熔断] 总亏损${totalLossPct.toFixed(1)}%超25%，暂停所有买入，等待市场企稳`);
+      reasoning.push(`[v7熔断-${cbLevel === 'reduce' ? '减仓' : '审查'}] 总亏损${totalLossPct.toFixed(1)}%>${cbLevel === 'reduce' ? '20' : '15'}%，暂停买入`);
 
-    // [索罗斯修正] Capitulation分步建仓：先30%试探，不一次性重仓
+    // [索罗斯修正] Capitulation分步建仓：先30%试探
     } else if (cyclePhase === 'capitulation') {
       action = 'buy';
-      // 分步：只投入计划量的30%作为试探仓
       const fullAmount = Math.round(rawBase * cycleMultiplier.capitulation * contrarian * buyConviction * valueMultiplier * bf);
       opAmount = Math.round(fullAmount * 0.3);
       opShares = r4(opAmount / nav);
@@ -1702,7 +1905,6 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
       reasoning.push(`[Soros试探] 恐慌探底，先投30%试探（¥${opAmount}/${fullAmount}），确认反转再加仓`);
     } else if (cyclePhase === 'early_recovery') {
       action = 'buy';
-      // early_recovery = 确认阶段，投入70%
       opAmount = Math.round(rawBase * cycleMultiplier.early_recovery * valueMultiplier * buyConviction * bf * 0.7);
       opShares = r4(opAmount / nav);
       confidence = Math.min(75 + lossConfBoost, 90); urgency = 'high';
@@ -1713,21 +1915,42 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
       opShares = r4(opAmount / nav);
       confidence = 60 + lossConfBoost; urgency = lossUrgency;
       reasoning.push(`[Graham] 价值平均：低于成本${lossPct.toFixed(1)}%，乘数${valueMultiplier.toFixed(1)}x`);
-    } else if (compositeScore >= -20) {
-      action = 'buy';
+    } else if (compositeScore >= modelCfg.lossBuyFloor) {
+      // 亏损偏空区: v6.2(-30~-20)小额买入, v7.2(-15~0)基本面过滤
       const fundOk = fundScore.score >= 0;
-      const mult = fundOk ? 0.8 : 0.4;
-      opAmount = Math.round(rawBase * mult * valueMultiplier * bf);
-      opShares = r4(opAmount / nav);
-      confidence = 50 + lossConfBoost; urgency = lossUrgency;
-      reasoning.push(`[Lynch] ${fundOk ? '基本面尚可，逢低布局' : '基本面也弱，谨慎小额'}`);
+      if (modelCfg.useSigmoid) {
+        // v7.2: 基本面好才买
+        if (fundOk) {
+          action = 'buy';
+          opAmount = Math.round(rawBase * 0.5 * valueMultiplier * bf);
+          opShares = r4(opAmount / nav);
+          confidence = 50 + lossConfBoost; urgency = lossUrgency;
+          reasoning.push(`[Lynch] 基本面尚可（${fundScore.score}分），小额逢低布局`);
+        } else {
+          action = 'hold'; confidence = 45; urgency = 'low';
+          reasoning.push(`[观望] 评分${compositeScore}偏空+基本面弱，暂不加仓`);
+        }
+      } else {
+        // v6.2: 继续小额买入
+        const mult = fundOk ? 0.8 : 0.4;
+        action = 'buy';
+        opAmount = Math.round(rawBase * mult * valueMultiplier * bf);
+        opShares = r4(opAmount / nav);
+        confidence = 50 + lossConfBoost; urgency = lossUrgency;
+        reasoning.push(`[Lynch] ${fundOk ? '基本面尚可，逢低布局' : '基本面也弱，谨慎小额'}`);
+      }
     } else {
-      // 偏空但未触发止损卖出（compositeScore在-20~-30之间）
-      action = 'buy';
-      opAmount = Math.round(rawBase * 0.3 * Math.max(valueMultiplier, 1) * bf);
-      opShares = r4(opAmount / nav);
-      confidence = 40; urgency = 'low';
-      reasoning.push(`[Graham] 偏空（${compositeScore}分），安全边际${lossPct.toFixed(1)}%，小额逆向买入`);
+      // 低于lossBuyFloor: v6.2仍小额买入, v7.2观望
+      if (modelCfg.useSigmoid) {
+        action = 'hold'; confidence = 40; urgency = 'low';
+        reasoning.push(`[观望] 综合评分${compositeScore}<${modelCfg.lossBuyFloor}，等待见底信号`);
+      } else {
+        action = 'buy';
+        opAmount = Math.round(rawBase * 0.3 * Math.max(valueMultiplier, 1) * bf);
+        opShares = r4(opAmount / nav);
+        confidence = 40; urgency = 'low';
+        reasoning.push(`[Graham] 偏空（${compositeScore}分），安全边际${lossPct.toFixed(1)}%，小额逆向买入`);
+      }
     }
   }
 
@@ -1749,15 +1972,20 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     reasoning.push(`[警告] 底仓100%，买入后无法卖出，请先调低底仓比例`);
   }
 
-  // [A股修正] 7天赎回惩罚检查：按份额分批判断，只阻止7天内买入的份额卖出
+  // [A股修正+v7] 7天赎回惩罚检查：紧急止损可覆盖赎回保护
   if (action === 'sell' && daysSinceLastBuy < 7) {
-    // 计算7天内买入的总份额
     const recentBuys = db.prepare(
       "SELECT COALESCE(SUM(shares), 0) as recent_shares FROM transactions WHERE fund_id = ? AND type = 'buy' AND date >= date('now', '-7 days')"
     ).get(fundId) as any;
     const recentBuyShares = recentBuys?.recent_shares || 0;
     const safeToSellShares = Math.max(0, holdingShares - recentBuyShares);
-    if (safeToSellShares <= 0) {
+    // [v7] 紧急止损覆盖: 熔断级别critical 或 单日跌>3% → 接受1.5%费用
+    const todayChange = navHistory.length >= 2 ? ((nav - navHistory[navHistory.length - 2]?.nav) / navHistory[navHistory.length - 2]?.nav * 100) : 0;
+    const isEmergency = cbLevel === 'critical' || todayChange < -3;
+    if (isEmergency && safeToSellShares <= 0) {
+      // 紧急情况下仍然卖出，接受赎回费
+      reasoning.push(`[v7紧急止损] 接受1.5%赎回费，止损优先于赎回保护（今日跌${todayChange.toFixed(1)}%）`);
+    } else if (safeToSellShares <= 0) {
       action = 'hold'; opShares = 0; opAmount = 0;
       reasoning.push(`[赎回保护] 全部持仓均为7天内买入（${recentBuyShares.toFixed(2)}份），赎回费1.5%，暂不卖出`);
     } else if (opShares > safeToSellShares) {
@@ -1765,6 +1993,13 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
       opAmount = Math.round(opShares * nav);
       reasoning.push(`[赎回保护] 7天内买入${recentBuyShares.toFixed(2)}份不可卖，仅卖出早期持仓${opShares}份`);
     }
+  }
+
+  // [v7.4 盲区2补充] 现金占比低时缩减买入
+  if (action === 'buy' && opAmount > 0 && cashReserveLow && modelCfg.id === 'v7.4') {
+    opShares = r4(opShares * 0.5);
+    opAmount = Math.round(opShares * nav);
+    reasoning.push(`[v7.4集中度] 该基金占组合>15%，买入缩减50%分散风险`);
   }
 
   // === 预测整合（v6新增：决策与预测模型联动）===
@@ -1776,25 +2011,42 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
   // 始终展示预测结果
   reasoning.push(`[明日预测] 预测明日${fcDirLabel}${forecast.predictedChangePct >= 0 ? '+' : ''}${forecast.predictedChangePct.toFixed(2)}%（置信${forecast.confidence}%）${fcGeoNote}`);
 
-  // [v6.2反思修正] 预测跌幅>1%时强制阻止买入（复盘发现清洁能源预测跌1.58%仍被买入）
-  if (action === 'buy' && forecast.direction === 'down' && Math.abs(forecast.predictedChangePct) >= 1.0 && opAmount > 0) {
-    action = 'hold'; opShares = 0; opAmount = 0;
-    reasoning.push(`[预测拦截] 预测明日跌${Math.abs(forecast.predictedChangePct).toFixed(2)}%（>1%），阻止买入，等明日低点`);
+  // === v7 预测整合（sigmoid软化 + 趋势模式豁免）===
+  // 趋势模式判定(由modelCfg.trendModeThreshold控制, v6.2=999禁用, v7.2=15)
+  const isTrendMode = isTrending && technical.macd.histogram > 0 && compositeScore > modelCfg.trendModeThreshold;
+
+  // 预测跌→买入调整(sigmoid模式 vs 硬阈值模式)
+  if (action === 'buy' && forecast.direction === 'down' && opAmount > 0 && !isTrendMode && !modelCfg.useSigmoid) {
+    // v6.2: 硬阈值拦截
+    if (Math.abs(forecast.predictedChangePct) >= 1.0) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[预测拦截] 预测跌${Math.abs(forecast.predictedChangePct).toFixed(2)}%>1%，阻止买入`);
+    } else if (Math.abs(forecast.predictedChangePct) > 0.3) {
+      const reduction = Math.abs(forecast.predictedChangePct) > 0.6 ? 0.3 : 0.5;
+      opShares = r4(opShares * reduction); opAmount = Math.round(opShares * nav);
+      reasoning.push(`[预测调整] 预测跌→缩减买入至${Math.round(reduction * 100)}%`);
+    }
+  } else if (action === 'buy' && forecast.direction === 'down' && opAmount > 0 && !isTrendMode && modelCfg.useSigmoid) {
+    const fcAbsPct = Math.abs(forecast.predictedChangePct);
+    // sigmoid: 跌0.3%→衰减到85%, 跌1%→衰减到35%, 跌2%→衰减到8%
+    const fcReduction = 1 - sigmoid(fcAbsPct, 0.8, 4);
+    if (fcReduction < 0.15) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[v7预测] 预测跌${fcAbsPct.toFixed(2)}%→衰减${Math.round((1-fcReduction)*100)}%，阻止买入`);
+    } else if (fcReduction < 0.9) {
+      opShares = r4(opShares * fcReduction);
+      opAmount = Math.round(opShares * nav);
+      reasoning.push(`[v7预测] 预测跌${fcAbsPct.toFixed(2)}%→买入缩减至${Math.round(fcReduction*100)}%`);
+    }
   }
-  // 预测与决策矛盾时调整操作量
-  else if (action === 'buy' && forecast.direction === 'down' && Math.abs(forecast.predictedChangePct) > 0.3 && opAmount > 0) {
-    const reduction = Math.abs(forecast.predictedChangePct) > 0.6 ? 0.3 : 0.5;
-    opShares = r4(opShares * reduction);
-    opAmount = Math.round(opShares * nav);
-    reasoning.push(`[预测调整] 预测明日跌${Math.abs(forecast.predictedChangePct).toFixed(2)}%→缩减买入至${Math.round(reduction * 100)}%`);
-  }
+  // 预测涨→缩减卖出
   if (action === 'sell' && forecast.direction === 'up' && Math.abs(forecast.predictedChangePct) > 0.3 && opShares > 0) {
     const reduction = Math.abs(forecast.predictedChangePct) > 1 ? 0.3 : 0.5;
     opShares = r4(opShares * reduction);
     opAmount = Math.round(opShares * nav);
-    reasoning.push(`[预测调整] 预测明日涨→缩减卖出至${Math.round(reduction * 100)}%，等涨完再卖`);
+    reasoning.push(`[预测调整] 预测明日涨→缩减卖出至${Math.round(reduction * 100)}%`);
   }
-  // 预测与决策一致时也说明
+  // 预测确认
   if (action === 'buy' && forecast.direction === 'up' && forecast.predictedChangePct > 0.3) {
     reasoning.push(`[预测确认] 预测明日涨，买入时机合理`);
   }
@@ -1802,24 +2054,77 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     reasoning.push(`[预测确认] 预测明日跌，卖出时机合理`);
   }
 
-  // [v6.2反思修正] 布林带高位硬性拦截（复盘发现港股创新药%B=115仍被买入）
-  if (action === 'buy' && technical.bollingerBands.percentB > 85 && opAmount > 0) {
-    action = 'hold'; opShares = 0; opAmount = 0;
-    reasoning.push(`[追高拦截] 布林%B=${technical.bollingerBands.percentB.toFixed(0)}>85，价格处于高位，禁止追高买入`);
+  // [v7.4 盲区5] 赎回时滞提醒(forecast已计算)
+  if (action === 'sell' && opShares > 0 && modelCfg.id === 'v7.4') {
+    const estimatedDays = fund.code && /ETF|联接/.test(fund.name) ? 'T+1~T+2' : 'T+2~T+4';
+    if (forecast.direction === 'down' && Math.abs(forecast.predictedChangePct) > 0.5) {
+      reasoning.push(`[v7.4赎回时滞] 预计${estimatedDays}到账，期间可能再跌${(Math.abs(forecast.predictedChangePct) * 2).toFixed(1)}%`);
+    }
   }
 
-  // [v6.2反思修正] 地缘恐慌期全局抑制（复盘发现恐慌期仍有大量买入）
-  if (action === 'buy' && geoRisk && geoRisk.riskScore <= -30 && opAmount > 0) {
-    const geoReduction = geoRisk.riskScore <= -50 ? 0.2 : 0.4;
+  // 布林带高位拦截(sigmoid vs 硬阈值)
+  if (action === 'buy' && opAmount > 0 && !isTrendMode && !modelCfg.useSigmoid) {
+    // v6.2: 硬阈值85
+    if (technical.bollingerBands.percentB > 85) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[追高拦截] %B=${technical.bollingerBands.percentB.toFixed(0)}>85，禁止追高`);
+    }
+  } else if (action === 'buy' && opAmount > 0 && !isTrendMode && modelCfg.useSigmoid) {
+    const pctB = technical.bollingerBands.percentB;
+    // sigmoid: %B=70→衰减到95%, %B=85→衰减到50%, %B=100→衰减到10%
+    const bbReduction = 1 - sigmoid(pctB, 85, 0.12);
+    if (bbReduction < 0.15) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[v7布林] %B=${pctB.toFixed(0)}→衰减${Math.round((1-bbReduction)*100)}%，暂缓买入`);
+    } else if (bbReduction < 0.85) {
+      opShares = r4(opShares * bbReduction);
+      opAmount = Math.round(opShares * nav);
+      reasoning.push(`[v7布林] %B=${pctB.toFixed(0)}偏高→买入缩减至${Math.round(bbReduction*100)}%`);
+    }
+  } else if (action === 'buy' && isTrendMode && technical.bollingerBands.percentB > 85) {
+    reasoning.push(`[v7趋势豁免] %B=${technical.bollingerBands.percentB.toFixed(0)}>85但趋势确认，允许买入`);
+  }
+
+  // [v7.3 混合架构] 硬底线层: 无论什么模式都生效（sigmoid之后的绝对保护）
+  if (action === 'buy' && opAmount > 0 && technical.bollingerBands.percentB > 95) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[v7.3硬底线] %B=${technical.bollingerBands.percentB.toFixed(0)}>95，绝对禁止追高`);
+  }
+  if (action === 'buy' && opAmount > 0 && technical.trendScore < -35) {
+    opShares = r4(opShares * 0.25);
+    opAmount = Math.round(opShares * nav);
+    reasoning.push(`[v7.3硬底线] 趋势${technical.trendScore}<-35，硬性缩减至25%`);
+  }
+
+  // [v7] 地缘恐慌→sigmoid衰减买入
+  if (action === 'buy' && geoRisk && geoRisk.riskScore <= -20 && opAmount > 0) {
+    const geoReduction = 1 - sigmoid(Math.abs(geoRisk.riskScore), 40, 0.08);
     opShares = r4(opShares * geoReduction);
     opAmount = Math.round(opShares * nav);
-    reasoning.push(`[地缘风控] ${geoRisk.riskLevel === 'extreme_fear' ? '极度恐慌' : '恐慌'}（评分${geoRisk.riskScore}），买入缩减至${Math.round(geoReduction * 100)}%`);
+    reasoning.push(`[v7地缘] 风险评分${geoRisk.riskScore}→买入缩减至${Math.round(geoReduction*100)}%`);
+  }
+  // [v7.4 盲区3修复] 地缘极度恐慌→主动卖出(不仅阻止买入)
+  if (modelCfg.id === 'v7.4' && geoRisk && geoRisk.riskScore <= -70
+      && action !== 'sell' && swingShares > 0 && !isHedgeAsset(fund.name)) {
+    action = 'sell';
+    opShares = r4(swingShares * 0.25);
+    opAmount = Math.round(opShares * nav);
+    confidence = 70; urgency = 'high';
+    reasoning.push(`[v7.4地缘主动减仓] 极度恐慌(${geoRisk.riskScore})→主动卖出25%活仓避险`);
   }
 
-  // [v6.2反思修正] 盈利状态下趋势崩坏不该加仓（复盘发现科技智选盈利8.4%+趋势-55仍买入）
-  if (action === 'buy' && gainPct > 3 && technical.trendScore < -30 && opAmount > 0) {
-    action = 'hold'; opShares = 0; opAmount = 0;
-    reasoning.push(`[趋势拦截] 已盈利${gainPct.toFixed(1)}%但趋势恶化（${technical.trendScore}），持有等反转，不宜追加`);
+  // [v7] 盈利+趋势崩坏→sigmoid衰减(替代硬阈值-30)
+  if (action === 'buy' && gainPct > 3 && technical.trendScore < 0 && opAmount > 0) {
+    // sigmoid: trendScore=0→无影响, -20→衰减到60%, -40→衰减到15%
+    const trendReduction = 1 - sigmoid(Math.abs(technical.trendScore), 25, 0.12);
+    if (trendReduction < 0.2) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[v7趋势] 盈利${gainPct.toFixed(1)}%+趋势${technical.trendScore}→持有等反转`);
+    } else if (trendReduction < 0.85) {
+      opShares = r4(opShares * trendReduction);
+      opAmount = Math.round(opShares * nav);
+      reasoning.push(`[v7趋势] 趋势${technical.trendScore}→买入缩减至${Math.round(trendReduction*100)}%`);
+    }
   }
 
   // === 波动率修正 ===
@@ -1865,6 +2170,18 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     opAmount = maxSingleAmount;
     opShares = r4(opAmount / nav);
     reasoning.push(`[风控] 单次上限¥${maxSingleAmount}（总成本15%）`);
+  }
+
+  // 组合级日买入限额(仅v7.2启用)
+  if (action === 'buy' && opAmount > 0 && dailyBuyRemaining < Infinity && opAmount > dailyBuyRemaining) {
+    if (dailyBuyRemaining <= 0) {
+      action = 'hold'; opShares = 0; opAmount = 0;
+      reasoning.push(`[组合风控] 今日买入已达限额（组合10%），暂停`);
+    } else {
+      opAmount = Math.round(dailyBuyRemaining);
+      opShares = r4(opAmount / nav);
+      reasoning.push(`[v7组合风控] 今日剩余额度¥${Math.round(dailyBuyRemaining)}，缩减至限额内`);
+    }
   }
 
   // [假设质疑修正] 组合板块敞口检查
@@ -2029,13 +2346,14 @@ async function computeDecision(fundId: number | string, realtimeNav: number): Pr
     reasoning,
     riskWarnings: {
       worstCaseLoss,
-      circuitBreaker,
+      circuitBreaker: cbLevel !== 'none',
+      circuitBreakerLevel: cbLevel,
       totalLossPct: Math.round(totalLossPct * 10) / 10,
       daysSinceLastBuy,
       redeemFeeRate: Math.round(redeemFeeRate * 10000) / 100,
       redeemFeeLevels: redeemFeeLevels.map(l => ({ ...l, feeRate: l.feeRate })),
     },
-    modelVersion: { forecast: FORECAST_MODEL_VERSION, decision: DECISION_MODEL_VERSION },
+    modelVersion: { forecast: FORECAST_MODEL_VERSION, decision: modelCfg.id, label: modelCfg.label },
     timestamp: new Date().toISOString(),
   };
 }
@@ -2065,11 +2383,17 @@ function logDecision(fundId: number, decision: any) {
 }
 
 // 单基金决策端点
+// 获取可用模型版本列表
+router.get('/models', (_req: Request, res: Response) => {
+  res.json({ models: getAvailableModels(), default: DEFAULT_MODEL });
+});
+
 router.get('/funds/:id/decision', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     const realtimeNav = req.query.nav ? parseFloat(req.query.nav as string) : 0;
-    const result = await computeDecision(id, realtimeNav);
+    const modelVersion = (req.query.model as ModelVersionId) || undefined;
+    const result = await computeDecision(id, realtimeNav, modelVersion);
     logDecision(id, result);
     res.json(result);
   } catch (err: any) {
@@ -2099,11 +2423,12 @@ router.get('/decisions/all', async (req: Request, res: Response) => {
 
     const results: any[] = [];
 
-    // 并行调用完整决策引擎
+    // 并行调用完整决策引擎(支持model参数)
+    const batchModel = (req.query.model as ModelVersionId) || undefined;
     await Promise.all(funds.filter(f => f.holding_shares > 0).map(async (f) => {
       const nav = estimates[f.id] || 0;
       try {
-        const decision = await computeDecision(f.id, nav);
+        const decision = await computeDecision(f.id, nav, batchModel);
         logDecision(f.id, decision);
         results.push({
           fundId: f.id,
@@ -2426,8 +2751,14 @@ function computeForecastCore(
   let trendFactor = 0;
   trendFactor += weightedMom * adaptTrendW;
   trendFactor += tech.trendScore * 0.015;
-  if (Math.abs(streak) >= 5) trendFactor *= 0.35;
-  else if (Math.abs(streak) >= 3) trendFactor *= 0.87;
+  // [v7.3] 连涨/连跌: 趋势加速×1.2, 非趋势恢复v6.2强衰减×0.35
+  if (forecastRegime === 'trending') {
+    if (Math.abs(streak) >= 5) trendFactor *= 1.20;
+    else if (Math.abs(streak) >= 3) trendFactor *= 1.08;
+  } else {
+    if (Math.abs(streak) >= 5) trendFactor *= 0.35;  // v7.2:0.55 → v7.3:恢复v6.2的0.35
+    else if (Math.abs(streak) >= 3) trendFactor *= 0.80;
+  }
 
   // 均值回归因子
   const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
@@ -2586,8 +2917,11 @@ function computeForecastCore(
 
   // 综合预测
   const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + seasonalFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor + geoRiskFactor;
-  // [v6修正] ATR限幅从1.5x提升到2.5x — 复盘发现实际跌2-3%被限制到1%
-  const maxMove = atrPct * 2.5;
+  // [v7.1] ATR限幅: 趋势3.5x(v7.0: 4x回撤过大), 极端地缘4x, 默认2.5x
+  const atrLimitMult = (forecastRegime === 'trending') ? 3.5
+    : (geoRisk && Math.abs(geoRisk.riskScore) > 60) ? 4.0
+    : 2.5;
+  const maxMove = atrPct * atrLimitMult;
   const predictedChangePct = Math.max(-maxMove, Math.min(maxMove, rawPrediction));
 
   // 方向判定

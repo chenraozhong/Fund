@@ -453,7 +453,8 @@ export const api = {
     error?: string;
     generated_at?: string;
   }>(`/ai/funds/${id}/research`),
-  getDecision: (id: number, nav: number) => request<{
+  getModels: () => request<{ models: { id: string; label: string; description: string }[]; default: string }>('/strategy/models'),
+  getDecision: (id: number, nav: number, model?: string) => request<{
     nav: number; action: 'buy' | 'sell' | 'hold'; shares: number; amount: number;
     confidence: number; urgency: 'high' | 'medium' | 'low'; summary: string; compositeScore: number;
     position: { holdingShares: number; costNav: number; gainPct: number; baseShares: number; swingShares: number; marketValue: number };
@@ -469,8 +470,9 @@ export const api = {
       news: { score: number; sentiment: string; bullish: string[]; bearish: string[] };
     };
     reasoning: string[];
+    modelVersion: { forecast: string; decision: string; label: string };
     timestamp: string;
-  }>(`/strategy/funds/${id}/decision?nav=${nav}`),
+  }>(`/strategy/funds/${id}/decision?nav=${nav}${model ? `&model=${model}` : ''}`),
   getForecast: (id: number) => request<ForecastResult>(`/strategy/funds/${id}/forecast`),
   getFundStrategy: (id: number) => request<StrategyResult>(`/strategy/funds/${id}`),
   getQuickAdvice: (id: number, realtimeNav: number) => request<StrategyResult>(`/strategy/funds/${id}?nav=${realtimeNav}`),

@@ -227,6 +227,8 @@ export default function FundDetail() {
   const [latestNavInfo, setLatestNavInfo] = useState<{ nav: number; prevNav: number; date: string; estimatedNav: number | null; estimateTime: string | null } | null>(null)
   const [swingResult, setSwingResult] = useState<any>(null)
   const [decision, setDecision] = useState<any>(null)
+  const [modelList, setModelList] = useState<{ id: string; label: string; description: string }[]>([])
+  const [selectedModel, setSelectedModel] = useState<string>('')
   const [forecast, setForecast] = useState<ForecastResult | null>(null)
   const [forecastLoading, setForecastLoading] = useState(false)
   const [snapshots, setSnapshots] = useState<DailySnapshot[]>([])
@@ -253,6 +255,9 @@ export default function FundDetail() {
     api.getForecast(fundId).then(setForecast).catch(() => {}).finally(() => setForecastLoading(false))
   }
   useEffect(() => { load() }, [fundId])
+  useEffect(() => {
+    api.getModels().then(r => { setModelList(r.models); if (!selectedModel) setSelectedModel(r.default) }).catch(() => {})
+  }, [])
 
   const fetchQuickAdvice = async () => {
     const nav = parseFloat(quickNav)
@@ -261,7 +266,7 @@ export default function FundDetail() {
     try {
       const [swing, dec] = await Promise.all([
         api.getSwingAdvice(fundId, nav),
-        api.getDecision(fundId, nav),
+        api.getDecision(fundId, nav, selectedModel || undefined),
       ])
       setSwingResult(swing)
       setDecision(dec)
@@ -1064,6 +1069,26 @@ export default function FundDetail() {
               />
             </div>
           </div>
+          {modelList.length > 1 && (
+            <select value={selectedModel} onChange={e => {
+              setSelectedModel(e.target.value)
+              // 切换模型后自动重新获取决策
+              const nav = parseFloat(quickNav)
+              if (nav > 0) {
+                setQuickLoading(true)
+                Promise.all([
+                  api.getSwingAdvice(fundId, nav),
+                  api.getDecision(fundId, nav, e.target.value),
+                ]).then(([swing, dec]) => { setSwingResult(swing); setDecision(dec) })
+                .catch(() => {}).finally(() => setQuickLoading(false))
+              }
+            }}
+              className="px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none">
+              {modelList.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          )}
           <button onClick={fetchQuickAdvice} disabled={quickLoading || !quickNav}
             className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm font-medium transition-colors">
             {quickLoading ? '分析中...' : '分析'}
@@ -1088,6 +1113,11 @@ export default function FundDetail() {
                   }`}>
                     {decision.action === 'buy' ? '买' : decision.action === 'sell' ? '卖' : '持'}
                   </div>
+                  {decision.modelVersion && (
+                    <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium">
+                      {decision.modelVersion.label || decision.modelVersion.decision}
+                    </span>
+                  )}
                   <div>
                     <div className={`text-lg font-bold ${
                       decision.action === 'buy' ? 'text-emerald-800' :
