@@ -8,7 +8,7 @@ const router = Router();
 // ============================================================
 // 模型版本号
 // ============================================================
-const FORECAST_MODEL_VERSION = 'v7.4';  // 预测模型版本（v7.4: 继承v7.3混合架构）
+const FORECAST_MODEL_VERSION = 'v7.5';  // 预测模型版本（v7.5: 港股休市+黄金专属因子+地缘衰减）
 const DECISION_MODEL_VERSION = 'v7.4';  // 决策模型版本（v7.4: 熊市防御 — 熔断状态机+现金底线+地缘主动卖出+避险豁免+赎回时滞）
 
 // ============================================================
@@ -2003,7 +2003,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   }
 
   // === 预测整合（v6新增：决策与预测模型联动）===
-  const forecast = computeForecastCore(navValues, technical, riskMetrics, newsScore, market, capitalFlow, geoRisk);
+  const forecast = computeForecastCore(navValues, technical, riskMetrics, newsScore, market, capitalFlow, geoRisk, fund.name);
   const fcDirLabel = forecast.direction === 'up' ? '上涨' : forecast.direction === 'down' ? '下跌' : '横盘';
   const fcGeoNote = geoRisk && geoRisk.signals.length > 0
     ? `，地缘${geoRisk.riskLevel === 'extreme_fear' ? '极度恐慌' : geoRisk.riskLevel === 'fear' ? '恐慌' : '中性'}（${geoRisk.riskDetail}）`
@@ -2496,7 +2496,7 @@ router.get('/trade-analysis', async (req: Request, res: Response) => {
         const risk = calcRisk(navValues);
         const geoRisk = await geoRiskPromise;
         const newsScore = scoreNewsSentiment([]);
-        const forecast = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, null, geoRisk);
+        const forecast = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, null, geoRisk, name);
         fundDataCache.set(fundId, { navValues, tech, risk, marketCtx, forecast });
       }
     });
@@ -2713,8 +2713,15 @@ function computeForecastCore(
   marketCtx: SectorInfo | null,
   capitalFlow: CapitalFlowData | null,
   geoRisk?: GeopoliticalRisk | null,
+  fundName?: string,
 ): ForecastCoreResult {
   if (navValues.length < 5) return { predictedChangePct: 0, direction: 'sideways', confidence: 20, factors: {} };
+
+  // [v7.5] 港股休市日检测：港股基金在港股休市日预测横盘
+  const nextTD = getNextTradingDay();
+  if (fundName && isHKFund(fundName) && isHKHoliday(nextTD)) {
+    return { predictedChangePct: 0, direction: 'sideways', confidence: 95, factors: { hkClosed: 0 } };
+  }
 
   const current = navValues[navValues.length - 1];
   const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
@@ -2900,14 +2907,60 @@ function computeForecastCore(
     }
   }
 
-  // [v6] 地缘/事件风险因子 — 原油+黄金+美股+恒生+美元 综合温度计
+  // [v7.5] 地缘/事件风险因子 — 增加时间衰减 + 黄金专属逻辑 + 油价/美元影响
   let geoRiskFactor = 0;
   if (geoRisk && (geoRisk.riskScore !== 0 || geoRisk.signals.length > 0)) {
-    // 风险评分直接映射：-100~+100 → 因子 -0.8~+0.5（恐慌端放大）
-    if (geoRisk.riskScore <= -50) geoRiskFactor = geoRisk.riskScore * 0.016;     // -50→-0.8, -100→-1.6
-    else if (geoRisk.riskScore <= -20) geoRiskFactor = geoRisk.riskScore * 0.012; // -20→-0.24, -50→-0.6
-    else if (geoRisk.riskScore >= 20) geoRiskFactor = geoRisk.riskScore * 0.005;  // +20→+0.1, +100→+0.5
-    else geoRiskFactor = geoRisk.riskScore * 0.003;                               // 中性区轻微影响
+    const isGold = fundName ? isHedgeAsset(fundName) : false;
+
+    if (isGold) {
+      // === 黄金专属因子：地缘恐慌利好、油价利好、美元反向 ===
+      let goldFactor = 0;
+
+      // 1. 地缘恐慌 → 利好黄金（方向反转！普通基金看空，黄金看多）
+      // cap=0.50防止极端riskScore产生过大信号
+      if (geoRisk.riskScore <= -50) goldFactor += Math.min(Math.abs(geoRisk.riskScore) * 0.008, 0.50);
+      else if (geoRisk.riskScore <= -20) goldFactor += Math.abs(geoRisk.riskScore) * 0.006;
+      else if (geoRisk.riskScore >= 30) goldFactor -= geoRisk.riskScore * 0.004;  // 乐观→轻微看空
+      else goldFactor += Math.abs(geoRisk.riskScore) * 0.001;
+
+      // 2. 油价 → 通胀预期（暴跌时区分衰退型vs供给过剩型）
+      if (geoRisk.oil.changePct > 4) goldFactor += 0.15;
+      else if (geoRisk.oil.changePct > 2) goldFactor += 0.08;
+      else if (geoRisk.oil.changePct < -4) goldFactor += (geoRisk.riskScore <= -20) ? -0.05 : -0.10; // 衰退型减半
+
+      // 3. 美元指数反向（恐慌时避险需求压过美元效应，压制减半）
+      if (geoRisk.dxy.changePct > 1) {
+        let dxyPressure = geoRisk.dxy.changePct * 0.12;
+        if (geoRisk.riskScore <= -50) dxyPressure *= 0.5; // 恐慌时美元压制减弱
+        goldFactor -= dxyPressure;
+      } else if (geoRisk.dxy.changePct < -0.5) {
+        goldFactor += Math.abs(geoRisk.dxy.changePct) * 0.10;
+      }
+
+      // 4. 油金齐涨确认 — 仅非极端恐慌下确认通胀（避免与地缘因子重复叠加）
+      if (geoRisk.oil.changePct > 2 && geoRisk.gold.changePct > 1 && geoRisk.riskScore > -30) {
+        goldFactor += 0.06;
+      }
+
+      geoRiskFactor = goldFactor;
+    } else {
+      // === 普通基金：原逻辑 + 时间衰减 ===
+      if (geoRisk.riskScore <= -50) geoRiskFactor = geoRisk.riskScore * 0.016;
+      else if (geoRisk.riskScore <= -20) geoRiskFactor = geoRisk.riskScore * 0.012;
+      else if (geoRisk.riskScore >= 20) geoRiskFactor = geoRisk.riskScore * 0.005;
+      else geoRiskFactor = geoRisk.riskScore * 0.003;
+
+      // [v7.5] 时间衰减：如果地缘数据的信号不是今天产生的（缓存延续），衰减影响
+      // 通过信号内容判断：如果涨跌幅很小(<1%)说明可能是隔日延续的旧数据
+      const signalStrength = Math.abs(geoRisk.oil.changePct) + Math.abs(geoRisk.gold.changePct);
+      if (signalStrength < 1.0 && Math.abs(geoRisk.riskScore) > 20) {
+        // 信号弱但评分高 → 可能是昨日残留，衰减60%
+        geoRiskFactor *= 0.4;
+      } else if (signalStrength < 2.0 && Math.abs(geoRisk.riskScore) > 40) {
+        // 信号中等但评分很高 → 衰减30%
+        geoRiskFactor *= 0.7;
+      }
+    }
   }
 
   // 波动率修正
@@ -3022,7 +3075,7 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
     // === 3. 多因子预测模型（v6 共用 computeForecastCore + 地缘风险） ===
     const current = navValues[navValues.length - 1];
     const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
-    const forecastResult = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, capitalFlow, geoRisk);
+    const forecastResult = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, capitalFlow, geoRisk, fund.name);
     const { predictedChangePct, direction, confidence } = forecastResult;
     const { trend: trendFactor, reversion: reversionFactor, rsi: rsiFactor, macd: macdFactor,
       bollinger: bbFactor, news: newsFactor, market: marketFactor, supportResistance: srFactor,
@@ -3283,7 +3336,7 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
         const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
 
         // v6: 统一调用 computeForecastCore，消除参数不一致问题
-        const fc = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, cfData, geoRisk);
+        const fc = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, cfData, geoRisk, f.name);
         const { predictedChangePct, direction, confidence } = fc;
         const predictedNav = Math.round((current * (1 + predictedChangePct / 100)) * 10000) / 10000;
 
@@ -3340,6 +3393,35 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
 // ============================================================
 
 // 中国A股法定休市日（2025-2026，每年底需更新下一年）
+// 港股额外休市日（不含与A股重叠的日期，只列港股独有休市日）
+const HK_EXTRA_HOLIDAYS = new Set([
+  // 2025
+  '2025-01-01', '2025-04-18', '2025-04-19', '2025-04-21', // 耶稣受难+复活节
+  '2025-05-05', '2025-06-02', // 劳动节翌日, 端午翌日
+  '2025-07-01', // 回归纪念日
+  '2025-10-07', // 重阳节
+  '2025-12-25', '2025-12-26', // 圣诞
+  // 2026
+  '2026-01-01', '2026-04-03', '2026-04-04', '2026-04-06', // 耶稣受难+复活节
+  '2026-05-25', // 佛诞
+  '2026-07-01', // 回归纪念日
+  '2026-10-19', // 重阳节
+  '2026-12-25', '2026-12-26', // 圣诞
+]);
+
+/** 判断是否为港股休市日（包含A股休市日+港股独有休市日） */
+function isHKHoliday(dateStr: string): boolean {
+  if (CN_STOCK_HOLIDAYS.has(dateStr)) return true;
+  if (HK_EXTRA_HOLIDAYS.has(dateStr)) return true;
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.getDay() === 0 || d.getDay() === 6;
+}
+
+/** 判断是否为港股关联基金 */
+function isHKFund(fundName: string): boolean {
+  return /港股|恒生|港通|沪港深|QDII.*港|H股|港元/i.test(fundName);
+}
+
 const CN_STOCK_HOLIDAYS = new Set([
   // 2025
   '2025-01-01',
@@ -3823,7 +3905,7 @@ export async function getBatchForecasts() {
       const newsScore = scoreNewsSentiment([]);
       const marketCtx = await fetchMarketContext(f.name);
       const capitalFlow = null;
-      const forecast = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, capitalFlow, geoRisk);
+      const forecast = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, capitalFlow, geoRisk, f.name);
       const currentNav = navValues[navValues.length - 1];
       const predictedNav = currentNav * (1 + forecast.predictedChangePct / 100);
 
@@ -3976,7 +4058,7 @@ export async function getSingleForecast(fundId: number, estimateNav?: number) {
   const newsScore = scoreNewsSentiment(news);
   const current = navValues[navValues.length - 1];
   const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
-  const forecastResult = computeForecastCore(navValues, tech, riskM, newsScore, marketCtx, capitalFlow, geoRisk);
+  const forecastResult = computeForecastCore(navValues, tech, riskM, newsScore, marketCtx, capitalFlow, geoRisk, fund.name);
   const { predictedChangePct, direction, confidence } = forecastResult;
   const predictedNav = Math.round((current * (1 + predictedChangePct / 100)) * 10000) / 10000;
   const upBias = predictedChangePct > 0 ? 1.3 : 1.0;

@@ -145,3 +145,32 @@ export function getAllSnapshots() {
     ) latest ON s.fund_id = latest.fund_id AND s.date = latest.max_date
   `).all();
 }
+
+/** Get cost NAV change summary for all funds (latest vs previous snapshot) */
+export function getCostNavChanges() {
+  const rows = db.prepare(`
+    WITH ranked AS (
+      SELECT fund_id, date, cost_nav, market_nav, gain_pct,
+        ROW_NUMBER() OVER (PARTITION BY fund_id ORDER BY date DESC) as rn
+      FROM daily_snapshots
+    )
+    SELECT
+      r1.fund_id,
+      r1.cost_nav as current_cost_nav,
+      r1.date as current_date,
+      r2.cost_nav as prev_cost_nav,
+      r2.date as prev_date
+    FROM ranked r1
+    LEFT JOIN ranked r2 ON r1.fund_id = r2.fund_id AND r2.rn = 2
+    WHERE r1.rn = 1
+  `).all() as any[];
+
+  return rows.map(r => ({
+    fund_id: r.fund_id,
+    costNav: r.current_cost_nav || 0,
+    prevCostNav: r.prev_cost_nav || 0,
+    costNavChange: r.prev_cost_nav ? r.current_cost_nav - r.prev_cost_nav : 0,
+    costNavChangePct: r.prev_cost_nav ? ((r.current_cost_nav - r.prev_cost_nav) / r.prev_cost_nav) * 100 : 0,
+    date: r.current_date,
+  }));
+}

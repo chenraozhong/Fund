@@ -61,6 +61,7 @@ register('GET', '/stats/allocation', () => stats.getAllocation());
 register('POST', '/stats/snapshot', () => ({ success: true, count: stats.recordDailySnapshots() }));
 register('GET', '/stats/snapshots/:fundId', (p, q) => stats.getSnapshots(p.fundId, q.days ? parseInt(q.days) : undefined));
 register('GET', '/stats/snapshots-all', () => stats.getAllSnapshots());
+register('GET', '/stats/cost-nav-changes', () => stats.getCostNavChanges());
 
 // --- Trades ---
 register('GET', '/trades/funds/:fundId', (p) => trades.listTrades(p.fundId));

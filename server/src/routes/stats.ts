@@ -29,6 +29,10 @@ router.get('/snapshots-all', (_req: Request, res: Response) => {
   res.json(svc.getAllSnapshots());
 });
 
+router.get('/cost-nav-changes', (_req: Request, res: Response) => {
+  res.json(svc.getCostNavChanges());
+});
+
 // Re-export for backward compatibility (used by nav.ts)
 export { recordDailySnapshots } from '../services/stats.service';
 export default router;

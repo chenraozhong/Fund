@@ -542,6 +542,8 @@ export const api = {
   recordSnapshot: () => request<{ success: boolean; count: number }>('/stats/snapshot', { method: 'POST' }),
   getSnapshots: (fundId: number, days?: number) =>
     request<DailySnapshot[]>(`/stats/snapshots/${fundId}${days ? `?days=${days}` : ''}`),
+  getCostNavChanges: () =>
+    request<{ fund_id: number; costNav: number; prevCostNav: number; costNavChange: number; costNavChangePct: number; date: string }[]>('/stats/cost-nav-changes'),
 
   getEstimateAll: () => request<Record<number, { gsz: number; gszzl: number; gztime: string; dwjz: number; name: string }>>('/nav/estimate/all'),
   getLatestNav: (code: string) => request<NavLatest>(`/nav/${code}/latest`),

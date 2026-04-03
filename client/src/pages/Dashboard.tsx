@@ -29,6 +29,8 @@ export default function Dashboard() {
   const [reviewSummary, setReviewSummary] = useState<ForecastReviewSummary | null>(null)
   const [showReview, setShowReview] = useState(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [costNavChanges, setCostNavChanges] = useState<Record<number, { costNav: number; costNavChange: number; costNavChangePct: number }>>({})
+
 
   // 判断今日净值是否已出（officialDate = 今天）
   const isNavPublished = (est: EstimateData | undefined) => {
@@ -57,6 +59,12 @@ export default function Dashboard() {
     api.getBatchForecasts().then(setForecasts).catch(() => {}).finally(() => setForecastsLoading(false))
     // 加载复盘摘要
     api.getForecastReviewSummary(30).then(setReviewSummary).catch(() => {})
+    // 加载成本净值变化
+    api.getCostNavChanges().then(data => {
+      const map: Record<number, any> = {}
+      for (const d of data) map[d.fund_id] = d
+      setCostNavChanges(map)
+    }).catch(() => {})
   }
 
   useEffect(() => { loadAll() }, [])
@@ -161,8 +169,9 @@ export default function Dashboard() {
             const fundColor = d ? d.color : f.color
             const est = estimates[fundId]
             const fc = forecasts[fundId]
+            const cnc = costNavChanges[fundId]
             const pos = d?.position
-            const costNav = pos?.costNav ?? 0
+            const costNav = pos?.costNav ?? (cnc?.costNav ?? 0)
             const gainPct = pos?.gainPct ?? (f ? f.gain_pct : 0)
             const mktValue = pos?.marketValue ?? (f ? f.current_value : 0)
             const isExpanded = expandedId === fundId
@@ -188,6 +197,12 @@ export default function Dashboard() {
                         {displayNav > 0 && <span className={`font-medium ${displayChangePct >= 0 ? 'text-red-500' : 'text-green-600'}`}>{displayChangePct >= 0 ? '+' : ''}{displayChangePct.toFixed(2)}%</span>}
                         {published && <span className="text-[10px] text-blue-500">净值</span>}
                         {!published && est?.gztime && <span className="text-[10px] text-gray-400 hidden sm:inline">{est.gztime.slice(11, 16)}</span>}
+                        {costNav > 0 && <span className="text-[10px] text-gray-400">成本{costNav.toFixed(4)}</span>}
+                        {cnc && Math.abs(cnc.costNavChange) > 0.00005 && (
+                          <span className={`text-[10px] font-medium ${cnc.costNavChange < 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            {cnc.costNavChange < 0 ? '↓' : '↑'}{Math.abs(cnc.costNavChange).toFixed(4)}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
