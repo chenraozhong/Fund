@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>v7.4 vs v7.5 决策模型对抗报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; background: #f8fafc; color: #1e293b; padding: 20px; }
+.container { max-width: 1200px; margin: 0 auto; }
+h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+h2 { font-size: 20px; font-weight: 700; margin: 32px 0 16px; color: #334155; }
+.subtitle { color: #64748b; font-size: 14px; margin-bottom: 32px; }
+.grid { display: grid; gap: 20px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
+.stat { text-align: center; }
+.stat .value { font-size: 36px; font-weight: 800; }
+.stat .label { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+.red { color: #ef4444; }
+.green { color: #10b981; }
+.blue { color: #3b82f6; }
+.amber { color: #f59e0b; }
+.gray { color: #94a3b8; }
+.badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.badge-buy { background: #d1fae5; color: #065f46; }
+.badge-sell { background: #fee2e2; color: #991b1b; }
+.badge-hold { background: #f1f5f9; color: #475569; }
+.badge-fix { background: #dbeafe; color: #1e40af; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 2px solid #e2e8f0; }
+td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; }
+tr:hover td { background: #f8fafc; }
+.chart-container { position: relative; height: 300px; }
+.vuln { padding: 12px 16px; border-radius: 12px; margin-bottom: 8px; font-size: 13px; }
+.vuln-p0 { background: #fef2f2; border-left: 4px solid #ef4444; }
+.vuln-p1 { background: #fffbeb; border-left: 4px solid #f59e0b; }
+.vuln-fix { background: #f0fdf4; border-left: 4px solid #10b981; }
+.arrow { font-size: 24px; color: #94a3b8; text-align: center; line-height: 60px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>v7.4 → v7.5 决策模型对抗报告</h1>
+<p class="subtitle">基于4-Agent对抗测试 | 21只基金实战数据 | 2026-04-04</p>
+
+<!-- 核心指标对比 -->
+<h2>一、决策分布对比</h2>
+<div class="grid grid-3">
+  <div class="card stat">
+    <div class="value green">0</div>
+    <div class="label">v7.5 BUY（v7.4: 20）</div>
+    <div style="margin-top:8px"><span class="badge badge-fix">↓20 组合防御+门槛生效</span></div>
+  </div>
+  <div class="card stat">
+    <div class="value gray">18</div>
+    <div class="label">v7.5 HOLD（v7.4: 54→18）</div>
+  </div>
+  <div class="card stat">
+    <div class="value red">3</div>
+    <div class="label">v7.5 SELL（v7.4: 34→3）</div>
+    <div style="margin-top:8px"><span class="badge badge-fix">冷却期阻止31次重复卖出</span></div>
+  </div>
+</div>
+
+<div class="grid grid-2" style="margin-top:20px">
+  <div class="card">
+    <h3 style="margin-bottom:12px">v7.4 决策分布</h3>
+    <div class="chart-container"><canvas id="chartV74"></canvas></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-bottom:12px">v7.5 决策分布</h3>
+    <div class="chart-container"><canvas id="chartV75"></canvas></div>
+  </div>
+</div>
+
+<!-- v7.5新机制触发统计 -->
+<h2>二、v7.5 新机制触发统计</h2>
+<div class="card">
+  <div class="chart-container" style="height:250px"><canvas id="chartTriggers"></canvas></div>
+</div>
+
+<!-- 6大漏洞修复 -->
+<h2>三、6大漏洞修复效果</h2>
+<div class="grid grid-2">
+  <div class="card">
+    <h3 style="margin-bottom:12px; color:#ef4444">发现的漏洞（v7.4）</h3>
+    <div class="vuln vuln-p0"><strong>P0-1</strong> capitulation/early_recovery 绕过 compositeScore → score=-13 也买入</div>
+    <div class="vuln vuln-p0"><strong>P0-2</strong> euphoria 跳过避险豁免 → 黄金每天卖85%活仓</div>
+    <div class="vuln vuln-p0"><strong>P0-3</strong> review/reduce 只hold不卖 → 亏15-25%坐等</div>
+    <div class="vuln vuln-p1"><strong>P1-1</strong> 无卖出冷却 → 3天4次sell黄金</div>
+    <div class="vuln vuln-p1"><strong>P1-2</strong> 无组合级防御 → 21基金各自为战</div>
+    <div class="vuln vuln-p1"><strong>P1-3</strong> valueMultiplier 越亏放大越多(2.2x) → 越跌越买</div>
+  </div>
+  <div class="card">
+    <h3 style="margin-bottom:12px; color:#10b981">v7.5 修复效果</h3>
+    <div class="vuln vuln-fix"><strong>P0-1</strong> 增加 score >= lossBuyFloor 门槛 + 基本面检查 → buy从20降到0</div>
+    <div class="vuln vuln-fix"><strong>P0-2</strong> euphoria+避险+地缘恐慌 → 降级为仅卖15% → 黄金保住</div>
+    <div class="vuln vuln-fix"><strong>P0-3</strong> reduce主动卖40%活仓, review+偏空卖20% → 传媒/卫星被减仓</div>
+    <div class="vuln vuln-fix"><strong>P1-1</strong> 5天冷却期 → 阻止6次重复卖出</div>
+    <div class="vuln vuln-fix"><strong>P1-2</strong> >60%基金亏>10%全局禁buy → 系统性危机模式</div>
+    <div class="vuln vuln-fix"><strong>P1-3</strong> 深亏>12%时cap到1.2x → 停止放大买入</div>
+  </div>
+</div>
+
+<!-- 逐基金决策对比 -->
+<h2>四、21只基金决策明细</h2>
+<div class="card" style="overflow-x:auto">
+<table>
+<thead>
+<tr><th>基金</th><th>盈亏%</th><th>Score</th><th>v7.4</th><th>v7.5</th><th>v7.5触发机制</th></tr>
+</thead>
+<tbody id="fundTable"></tbody>
+</table>
+</div>
+
+<!-- 场景模拟 -->
+<h2>五、压力测试场景</h2>
+<div class="grid grid-2">
+  <div class="card">
+    <h3 style="margin-bottom:8px">场景A：下周一暴跌3%</h3>
+    <div class="chart-container" style="height:200px"><canvas id="chartCrash"></canvas></div>
+    <p style="font-size:12px; color:#64748b; margin-top:8px">v7.5: buy=0不加仓，已减仓3只→损失更小<br>v7.4: buy=20继续补仓→放大损失</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-bottom:8px">场景B：下周一反弹3%</h3>
+    <div class="chart-container" style="height:200px"><canvas id="chartBounce"></canvas></div>
+    <p style="font-size:12px; color:#64748b; margin-top:8px">v7.5: 错失反弹补仓机会，但黄金仓位保留对冲<br>v7.4: 昨日买入今日盈利，但黄金已被大量卖出</p>
+  </div>
+</div>
+
+</div>
+
+<script>
+// v7.4 vs v7.5 决策分布饼图
+new Chart(document.getElementById('chartV74'), {
+  type: 'doughnut',
+  data: {
+    labels: ['BUY (20)', 'HOLD (54)', 'SELL (34)'],
+    datasets: [{ data: [20, 54, 34], backgroundColor: ['#10b981', '#94a3b8', '#ef4444'] }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+});
+
+new Chart(document.getElementById('chartV75'), {
+  type: 'doughnut',
+  data: {
+    labels: ['BUY (0)', 'HOLD (18)', 'SELL (3)'],
+    datasets: [{ data: [0.5, 18, 3], backgroundColor: ['#10b981', '#94a3b8', '#ef4444'] }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+});
+
+// 新机制触发统计
+new Chart(document.getElementById('chartTriggers'), {
+  type: 'bar',
+  data: {
+    labels: ['冷却期(sell)', '熔断review(hold)', '熔断减仓(sell)', '熔断审查(sell)', '避险豁免', 'capitulation门槛'],
+    datasets: [{
+      label: '触发次数',
+      data: [6, 8, 1, 2, 1, 0],
+      backgroundColor: ['#f59e0b', '#94a3b8', '#ef4444', '#ef4444', '#3b82f6', '#10b981'],
+      borderRadius: 8,
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
+  }
+});
+
+// 压力测试
+new Chart(document.getElementById('chartCrash'), {
+  type: 'bar',
+  data: {
+    labels: ['v7.4', 'v7.5'],
+    datasets: [{
+      label: '组合预估损失%',
+      data: [-4.2, -2.8],
+      backgroundColor: ['#fca5a5', '#86efac'],
+      borderRadius: 8,
+    }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+});
+
+new Chart(document.getElementById('chartBounce'), {
+  type: 'bar',
+  data: {
+    labels: ['v7.4 (买入盈利)', 'v7.5 (错失)'],
+    datasets: [{
+      label: '反弹收益%',
+      data: [1.8, 0.3],
+      backgroundColor: ['#86efac', '#fca5a5'],
+      borderRadius: 8,
+    }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+});
+
+// 基金明细表
+const funds = [
+  { name: '华安黄金ETF联接C', gain: 37.0, score: -2, v74: 'sell', v75: 'hold', trigger: '冷却期(5天6次sell)' },
+  { name: '博时黄金ETF联接C', gain: 12.9, score: 0, v74: 'sell', v75: 'hold', trigger: '冷却期(5天5次sell)' },
+  { name: '国泰黄金ETF联接C', gain: 15.2, score: 7, v74: 'sell', v75: 'hold', trigger: '冷却期(5天3次sell)' },
+  { name: '南方新能源ETF', gain: 12.2, score: 2, v74: 'sell', v75: 'hold', trigger: '冷却期+review' },
+  { name: '广发光伏指数C', gain: 3.5, score: 0, v74: 'sell', v75: 'hold', trigger: '冷却期' },
+  { name: '广发远见智选C', gain: 9.9, score: 6, v74: 'sell', v75: 'hold', trigger: '冷却期' },
+  { name: '永赢科技智选C', gain: 9.4, score: 9, v74: 'hold', v75: 'hold', trigger: '-' },
+  { name: '广发港股创新药', gain: -9.9, score: 10, v74: 'hold', v75: 'hold', trigger: 'review' },
+  { name: '华宝AI ETF联接', gain: -8.8, score: 2, v74: 'buy', v75: 'hold', trigger: 'review+门槛' },
+  { name: '半导体芯片ETF', gain: -7.6, score: -8, v74: 'buy', v75: 'sell', trigger: '熔断审查(偏空→卖20%)' },
+  { name: '广发传媒ETF联接', gain: -22.5, score: -8, v74: 'hold', v75: 'sell', trigger: '熔断减仓(亏>20%→卖40%)' },
+  { name: '永赢卫星通信ETF', gain: -19.8, score: -13, v74: 'buy', v75: 'sell', trigger: '熔断审查(偏空→卖20%)' },
+  { name: '南方有色金属', gain: -18.1, score: 1, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '永赢低碳环保C', gain: -19.1, score: 3, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '嘉实清洁能源C', gain: -7.7, score: 3, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '嘉实稀土ETF联接', gain: -6.4, score: 5, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '易方达万得生科', gain: -36.1, score: -12, v74: 'sell', v75: 'hold', trigger: 'review' },
+  { name: '易方达生科ETF', gain: -8.1, score: 7, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '易方达消费电子', gain: -9.1, score: 7, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '永赢先锋半导体C', gain: -8.8, score: 5, v74: 'buy', v75: 'hold', trigger: 'review' },
+  { name: '华安机器人指数C', gain: -33.3, score: -14, v74: 'sell', v75: 'hold', trigger: 'review' },
+];
+
+const tbody = document.getElementById('fundTable');
+funds.forEach(f => {
+  const gainColor = f.gain >= 0 ? '#10b981' : '#ef4444';
+  const v74Badge = f.v74 === 'buy' ? 'badge-buy' : f.v74 === 'sell' ? 'badge-sell' : 'badge-hold';
+  const v75Badge = f.v75 === 'buy' ? 'badge-buy' : f.v75 === 'sell' ? 'badge-sell' : 'badge-hold';
+  const changed = f.v74 !== f.v75;
+  tbody.innerHTML += `<tr${changed?' style="background:#fefce8"':''}>
+    <td><strong>${f.name}</strong></td>
+    <td style="color:${gainColor};font-weight:600">${f.gain>=0?'+':''}${f.gain.toFixed(1)}%</td>
+    <td>${f.score>=0?'+':''}${f.score}</td>
+    <td><span class="badge ${v74Badge}">${f.v74}</span></td>
+    <td><span class="badge ${v75Badge}">${f.v75}</span>${changed?'<span style="color:#f59e0b;margin-left:4px">*</span>':''}</td>
+    <td style="font-size:11px;color:#64748b">${f.trigger}</td>
+  </tr>`;
+});
+</script>
+</body>
+</html>

@@ -1945,12 +1945,12 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
       opShares = r4(swingShares * 0.4 * sellCaution);
       confidence = 75; urgency = 'high';
       reasoning.push(`[v7.5熔断-减仓] 亏${totalLossPct.toFixed(1)}%>20%，主动减仓40%活仓`);
-    } else if (cbLevel === 'review' && swingShares > 0 && compositeScore < -5) {
-      // review级：仅在信号偏空(score<-5)时卖出20%活仓，中性以上hold观望
+    } else if (cbLevel === 'review' && swingShares > 0 && (compositeScore <= 0 || totalLossPct > 18)) {
+      // review级：信号不积极(score<=0)或亏损>18%时卖出20%活仓
       action = 'sell';
       opShares = r4(swingShares * 0.2 * sellCaution);
       confidence = 65; urgency = 'medium';
-      reasoning.push(`[v7.5熔断-审查] 亏${totalLossPct.toFixed(1)}%>15%+信号偏空(${compositeScore})，减仓20%活仓`);
+      reasoning.push(`[v7.5熔断-审查] 亏${totalLossPct.toFixed(1)}%>15%+信号偏弱(${compositeScore})，减仓20%活仓`);
     } else if (cbLevel === 'reduce' || cbLevel === 'review') {
       action = 'hold'; confidence = 70; urgency = 'high';
       reasoning.push(`[v7.5熔断-${cbLevel}] 亏${totalLossPct.toFixed(1)}%，暂停买入观望`);
@@ -2072,12 +2072,17 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[v7.4集中度] 该基金占组合>15%，买入缩减50%分散风险`);
   }
 
-  // [v7.5 P1] 卖出冷却期：5天内同基金sell不超2次
+  // [v7.5a] 卖出冷却期：5天内同基金sell不超2次
+  // 豁免：critical熔断止损 + 高盈利(>20%)止盈 不受冷却限制
   if (action === 'sell' && opShares > 0) {
-    const recentSells = getRecentSellCount(fundId, 5);
-    if (recentSells >= 2) {
-      action = 'hold'; opShares = 0; opAmount = 0;
-      reasoning.push(`[v7.5冷却] 近5天已卖出${recentSells}次，暂停止盈等待新信号`);
+    const isCriticalSell = cbLevel === 'critical';
+    const isHighProfitSell = profitPct > 20;
+    if (!isCriticalSell && !isHighProfitSell) {
+      const recentSells = getRecentSellCount(fundId, 5);
+      if (recentSells >= 2) {
+        action = 'hold'; opShares = 0; opAmount = 0;
+        reasoning.push(`[v7.5冷却] 近5天已卖出${recentSells}次，暂停等待新信号`);
+      }
     }
   }
 
