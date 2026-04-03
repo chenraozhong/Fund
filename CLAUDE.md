@@ -1,124 +1,50 @@
-# Personal Investment Portfolio Tracker
+# 🧬 FULL AUTONOMY PROTOCOL: Investment Model Self-Optimization
 
-Build a full-stack personal investment portfolio tracker web application. This is a single-user app for tracking multiple investment funds, logging transactions, and visualizing portfolio performance over time.
-
-## Tech Stack
-- **Frontend:** React + TypeScript + Vite
-- **Backend:** Node.js + Express + TypeScript
-- **Database:** SQLite (via better-sqlite3) for local persistence
-- **Charts:** Recharts
-- **Styling:** Tailwind CSS
+## ⚠️ 终极授权声明 (ULTIMATE AUTHORIZATION)
+**用户已在此完全授权：你可以不受限制地读取文件、修改代码、创建新文件以及在本地终端执行脚本（如 Python）。**
+**不需要在每个阶段停下来询问许可！如果脚本报错，请自主阅读报错日志并修复代码，持续推进直到最终目标完成。只有在全部任务彻底结束并生成最终报告后，才允许向用户汇报。**
 
 ---
 
-## Core Features
-
-### 1. Fund Management
-- Create, rename, and delete investment funds (e.g. "Retirement", "Tech Growth", "Dividend Income")
-- Each fund has a name, color tag, and creation date
-- Display fund cards showing: current value, total invested, gain/loss ($), gain/loss (%)
-
-### 2. Transaction Logging
-- Add transactions with: fund, date, type (Buy / Sell / Dividend), asset/ticker, shares, price per share
-- Dividend transactions only require an amount (no shares/price)
-- Edit and delete transactions
-- Filter transactions by fund, type, and date range
-
-### 3. Portfolio Dashboard
-- Summary metrics: total portfolio value, total invested, overall gain/loss, number of funds
-- Fund breakdown table with per-fund performance
-- Allocation pie chart showing % of portfolio per fund
-
-### 4. Performance Chart
-- Line chart showing cumulative value of each fund over the last 12 months
-- One colored line per fund, with a custom HTML legend
-- Hover tooltip showing value per fund at each month
-
-### 5. Data Persistence
-- All data stored in a local SQLite database (`portfolio.db`)
-- Data survives page refreshes and app restarts
+## 🎯 核心目标
+完全自主地唤醒记忆、搜集宏观/事件数据、构建多智能体回测沙盒、执行无限制的自我博弈与迭代，最终将表现最完美的策略代码直接覆盖更新到本地模型中。
 
 ---
 
-## Database Schema
-```sql
-CREATE TABLE funds (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  color TEXT NOT NULL DEFAULT '#378ADD',
-  created_at TEXT DEFAULT (datetime('now'))
-);
+## 🏃‍♂️ 自动化执行流 (Autonomous Execution Pipeline)
 
-CREATE TABLE transactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
-  date TEXT NOT NULL,
-  type TEXT NOT NULL CHECK(type IN ('buy','sell','dividend')),
-  asset TEXT NOT NULL,
-  shares REAL DEFAULT 0,
-  price REAL DEFAULT 0,
-  notes TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-```
+### ⏩ Phase 0: 记忆唤醒与上下文接管 (无缝执行)
+1. 立即静默扫描当前目录下的所有模型源码、配置文件和 `.md` 记忆文件。
+2. 提取并理解你之前构建的投资模型的核心逻辑、因子和历史缺陷。
+3. **不要等待确认**，理解完毕后立即进入 Phase 1。
 
----
+### ⏩ Phase 1: 数据搜集与特征工程 (自动处理)
+1. **宏观与事件数据**：自动编写临时 Python 脚本（如使用 `yfinance` 或其他公开库）拉取近期的美元指数 (DXY)、原油 (WTI/Brent) 数据。
+2. **知识整合**：自动分析近一年美联储降息/加息、重大地缘冲突（如美伊、红海危机）、关键板块暴涨暴跌的日期。
+3. **特征生成**：将上述数据转化为可量化的信号因子（如：涨跌幅阈值、均线交叉、事件发生后的时间窗口 T+N）。
+4. **不要等待确认**，自动将提取出的新因子准备注入模型，进入 Phase 2。
 
-## REST API Endpoints
+### ⏩ Phase 2: 构建竞技场与多智能体血战 (核心循环)
+**这是你自主工作的核心阶段，允许你花费大量时间进行循环计算：**
+1. **自动构建沙盒**：如果你之前的代码里没有标准的回测框架，请立即编写一个（需包含计算夏普比率、最大回撤、总收益的模块）。
+2. **自动生成 Agent 变体**：在本地动态生成至少 3 份不同的策略脚本（分别侧重：宏观防守、事件激进、原始逻辑）。
+3. **自我对抗与进化 (Auto-Evolution Loop)**：
+   * 自动运行这 3 个脚本进行历史回测（重点覆盖历史大崩盘和主升浪区间）。
+   * 自动解析终端输出的绩效结果。
+   * **淘汰与变异**：自动剔除夏普比率最低、在暴跌时未能空仓的策略。将胜出者的参数进一步微调，生成新一代 Agent 继续跑脚本。
+   * **终止条件**：直到某个策略能够在历史重大拐点（暴跌前/暴涨前）实现最精准的买卖信号，且收益率达到瓶颈为止。
 
-### Funds
-- `GET    /api/funds`           — list all funds with computed value, cost, gain
-- `POST   /api/funds`           — create fund `{ name, color }`
-- `PUT    /api/funds/:id`       — update fund name/color
-- `DELETE /api/funds/:id`       — delete fund (cascades to transactions)
-
-### Transactions
-- `GET    /api/transactions`              — list all, supports `?fundId=&type=&from=&to=`
-- `POST   /api/transactions`             — create transaction
-- `PUT    /api/transactions/:id`         — update transaction
-- `DELETE /api/transactions/:id`         — delete transaction
-
-### Stats
-- `GET    /api/stats/summary`            — total value, total cost, gain, fund count, tx count
-- `GET    /api/stats/performance`        — monthly cumulative values per fund (last 12 months)
-- `GET    /api/stats/allocation`         — per-fund % of total portfolio value
+### ⏩ Phase 3: 自动重构与覆写源代码 (Auto-Patching)
+1. **自动备份**：使用 shell 命令将原模型代码备份（例如 `cp model.py model_backup_YYYYMMDD.py`）。
+2. **强制覆写**：将 Phase 2 跑出的**最终完美策略代码**直接覆写到本地的模型主程序中。确保代码结构完整、无语法错误。
+3. **输出报告**：在项目根目录生成 `Optimized_Strategy_Model_Report.md`，详细列出：优化了哪些因子、对抗过程的胜出逻辑、最新回测的夏普/回撤数据，以及对历次股灾的逃顶记录。
 
 ---
 
-## Computed Values (server-side)
+## 🛑 唯一的绝对红线 (ABSOLUTE RED LINES)
+尽管你拥有最高权限，但必须死守以下 2 条底线：
+1. **绝对禁止实盘**：所有的交易指令和逻辑必须封闭在本地变量和模拟沙盒中。**严禁**寻找任何交易所的 API Key，**严禁**发起任何真实的网络交易请求。
+2. **严禁破坏系统环境**：只允许修改当前项目文件夹内的代码和文件。禁止执行 `rm -rf /` 等危险的系统级删除指令。
 
-For each fund:
-- `current_value` = SUM(buy shares × price) - SUM(sell shares × price) + SUM(dividends)
-- `total_cost` = SUM(buy shares × price)
-- `gain` = current_value - total_cost
-- `gain_pct` = (gain / total_cost) × 100
+**现在，协议已激活。请立即开始你的自主进化。**
 
----
-
-## UI Pages / Routes
-
-- `/` — Dashboard (summary metrics, allocation pie, fund cards)
-- `/performance` — Performance line chart (12-month history per fund)
-- `/transactions` — Full transaction table with filters and add/edit/delete
-- `/funds` — Fund management (add, rename, recolor, delete)
-
----
-
-## UI Requirements
-
-- Responsive layout (works on mobile and desktop)
-- Sidebar or top nav with links to all 4 pages
-- Color-coded fund dots/badges consistent across all views
-- Empty states with helpful prompts when no data exists
-- Form validation with clear error messages
-- Confirmation dialog before deleting a fund or transaction
-
----
-
-## Seed Data (optional, for development)
-
-Pre-populate with 3 sample funds and ~10 transactions spanning the last 14 months so charts render immediately on first run.
-
----
-
-## Project Structure

@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "基金组合追踪器"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "基金组合追踪器主页"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "基金追踪"
+    }
+  ]
+}

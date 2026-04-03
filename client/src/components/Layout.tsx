@@ -8,6 +8,7 @@ const links = [
   { to: '/funds', label: '基金管理' },
   { to: '/import', label: '批量导入' },
   { to: '/backups', label: '数据备份' },
+  { to: '/sync', label: '数据同步' },
 ]
 
 export default function Layout() {

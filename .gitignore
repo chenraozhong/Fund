@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+client/dist/
+client/client/
+harmony-app/entry/src/main/resources/rawfile/web/assets/
+harmony-app/entry/src/main/resources/rawfile/web/index.html
+harmony-app/entry/src/main/resources/rawfile/web/index.harmony.html
+harmony-app/entry/src/main/resources/rawfile/web/sql-wasm.wasm
+harmony-app/entry/src/main/resources/rawfile/web/favicon.svg
+harmony-app/entry/src/main/resources/rawfile/web/icons.svg
+harmony-app/entry/src/main/resources/rawfile/web/test.html
+harmony-app/.hvigor/
+harmony-app/oh_modules/
+harmony-app/entry/oh_modules/
+harmony-app/entry/build/
+harmony-app/build/
+
+# Database & backups
+server/portfolio.db
+server/portfolio.db-shm
+server/portfolio.db-wal
+server/backups/*.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Temp files
+tmp.md
+CLAUDE.md.org
+*.log

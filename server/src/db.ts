@@ -1,13 +1,14 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import type { DBAdapter } from './db-interface';
 
 const dbPath = path.join(__dirname, '..', 'portfolio.db');
-const db = new Database(dbPath);
+const rawDb = new Database(dbPath);
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+rawDb.pragma('journal_mode = WAL');
+rawDb.pragma('foreign_keys = ON');
 
-db.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS funds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -28,7 +29,7 @@ db.exec(`
   );
 `);
 
-db.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
@@ -46,7 +47,7 @@ db.exec(`
   );
 `);
 
-db.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS daily_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
@@ -64,7 +65,7 @@ db.exec(`
 `);
 
 // 预测持久化 + 自动复盘
-db.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS forecasts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
@@ -101,7 +102,7 @@ db.exec(`
 `);
 
 // 决策记录表
-db.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS decision_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
@@ -139,7 +140,11 @@ const migrations = [
   "ALTER TABLE forecasts ADD COLUMN model_version TEXT DEFAULT 'v5'",
 ];
 for (const sql of migrations) {
-  try { db.exec(sql); } catch (_) { /* column/index already exists */ }
+  try { rawDb.exec(sql); } catch (_) { /* column/index already exists */ }
 }
+
+// Wrap as DBAdapter for type compatibility
+// better-sqlite3 already matches the interface naturally
+const db = rawDb as unknown as DBAdapter;
 
 export default db;

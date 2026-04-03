@@ -2,7 +2,48 @@ const BASE = '/api';
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
 
+// Harmony WebView mode: set by the local-router init
+let localDispatch: ((method: string, path: string, query?: Record<string, string>, body?: any) => Promise<{ status: number; data: any }>) | null = null;
+
+/**
+ * Initialize local mode for Harmony WebView.
+ * When set, all API calls bypass fetch and use the local router directly.
+ */
+export function initLocalMode(dispatcher: typeof localDispatch) {
+  localDispatch = dispatcher;
+}
+
+/** Check if running in Harmony WebView local mode */
+export function isLocalMode(): boolean {
+  return localDispatch !== null;
+}
+
+function parseUrlAndQuery(url: string): { path: string; query: Record<string, string> } {
+  const [path, qs] = url.split('?');
+  const query: Record<string, string> = {};
+  if (qs) {
+    for (const part of qs.split('&')) {
+      const [k, v] = part.split('=');
+      if (k) query[decodeURIComponent(k)] = v ? decodeURIComponent(v) : '';
+    }
+  }
+  return { path, query };
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  // Local mode: dispatch directly to service functions (Harmony WebView)
+  if (localDispatch) {
+    const method = (options?.method || 'GET').toUpperCase();
+    const body = options?.body ? JSON.parse(options.body as string) : undefined;
+    const { path, query } = parseUrlAndQuery(url);
+    const result = await localDispatch(method, '/api' + path, query, body);
+    if (result.status >= 400) {
+      throw new Error(result.data?.error || `Error ${result.status}`);
+    }
+    return result.data as T;
+  }
+
+  // Normal mode: HTTP fetch to Express server
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -520,4 +561,15 @@ export const api = {
     request<{ success: boolean; reviewed: number }>('/strategy/forecast-reviews/run', { method: 'POST' }),
   getFundForecastHistory: (fundId: number, limit?: number) =>
     request<any[]>(`/strategy/forecasts/fund/${fundId}${limit ? `?limit=${limit}` : ''}`),
+
+  // --- Data Sync ---
+  syncExport: () => request<{ version: number; exportedAt: string; data: Record<string, any[]> }>('/sync/export'),
+  syncImport: (syncData: { version: number; data: Record<string, any[]> }) =>
+    request<{ success: boolean; imported: Record<string, number> }>('/sync/import', { method: 'POST', body: JSON.stringify(syncData) }),
+  // Pull from remote PC server (routed through local-router in harmony mode)
+  syncPullFromPC: (pcUrl: string) =>
+    request<{ version: number; exportedAt: string; data: Record<string, any[]> }>('/sync/pull', { method: 'POST', body: JSON.stringify({ pcUrl }) }),
+  // Push to remote PC server (routed through local-router in harmony mode)
+  syncPushToPC: (pcUrl: string, syncData: any) =>
+    request<{ success: boolean; imported: Record<string, number> }>('/sync/push', { method: 'POST', body: JSON.stringify({ pcUrl, data: syncData }) }),
 };

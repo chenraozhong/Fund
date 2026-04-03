@@ -42,7 +42,7 @@ export async function createBackup(label?: string): Promise<{ filename: string; 
   const filename = `portfolio_${timestamp}${suffix}.db`;
   const dest = path.join(BACKUP_DIR, filename);
 
-  await db.backup(dest);
+  await (db as any).backup(dest);
 
   const stat = fs.statSync(dest);
 

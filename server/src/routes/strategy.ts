@@ -3696,4 +3696,360 @@ router.get('/forecasts/fund/:id', async (req: Request, res: Response) => {
   }
 });
 
+// ============================================================
+// Exported service functions for local-router (Harmony WebView)
+// These extract route-handler logic so both Express routes and
+// local-router share the same code — any fix applies to both.
+// ============================================================
+
+export { getAvailableModels, DEFAULT_MODEL };
+export { computeDecision, logDecision };
+export { computeForecastCore };
+export { FORECAST_MODEL_VERSION, DECISION_MODEL_VERSION };
+export { fetchNavHistory, fetchMarketContext, fetchGeopoliticalRisk };
+export { calcTechnical, calcRisk, calcCompositeScore };
+export { generateSignals, generateAdvice, generateSummary };
+export { generateShortTermPlan, generateLongTermPlan, generateRecoveryPlan };
+export { scoreNewsSentiment };
+export { r4, toLocalDateStr, getNextTradingDay, getTodayStr };
+
+/** Full strategy analysis for a fund (mirrors GET /strategy/funds/:id) */
+export async function getFullStrategy(fundId: number | string, realtimeNav?: number) {
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+  if (!fund) throw { status: 404, error: '基金不存在' };
+
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as holding_shares,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares * price ELSE 0 END), 0) -
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares * price ELSE 0 END), 0) +
+      COALESCE(SUM(CASE WHEN type = 'dividend' THEN price ELSE 0 END), 0) as cost_basis
+    FROM transactions WHERE fund_id = ?
+  `).get(fundId) as any;
+
+  const holdingShares = row.holding_shares;
+  const totalCost = row.cost_basis;
+  const costNav = holdingShares > 0 ? totalCost / holdingShares : 0;
+  const mNav = (realtimeNav && realtimeNav > 0) ? realtimeNav : (fund.market_nav || 0);
+  const marketValue = mNav > 0 ? holdingShares * mNav : totalCost;
+  const gain = marketValue - totalCost;
+  const gainPct = totalCost > 0 ? (gain / totalCost) * 100 : 0;
+  const stopProfit = fund.stop_profit_pct || 20;
+  const stopLoss = fund.stop_loss_pct || 15;
+
+  let navHistory: NavPoint[] = [];
+  if (fund.code) navHistory = await fetchNavHistory(fund.code, 60);
+  const navValues = navHistory.map(p => p.nav);
+  const effectiveNav = navValues.length > 0 ? navValues[navValues.length - 1] : mNav;
+
+  const technical = navValues.length >= 5 ? calcTechnical(navValues) : calcTechnical(effectiveNav > 0 ? [effectiveNav] : [1]);
+  const riskMetrics = calcRisk(navValues);
+  const market = await fetchMarketContext(fund.name);
+  const signals = generateSignals(technical, riskMetrics, market, effectiveNav, costNav, gainPct, stopProfit, stopLoss);
+  const compositeScore = calcCompositeScore(signals, technical, market);
+  const advice = generateAdvice(compositeScore, signals, technical, riskMetrics, effectiveNav, costNav, totalCost, gainPct, holdingShares, stopProfit, stopLoss);
+  const summary = generateSummary(compositeScore, technical, riskMetrics, market, gainPct, signals);
+  const shortTermPlan = generateShortTermPlan(effectiveNav, technical, riskMetrics, costNav, gainPct, totalCost, stopProfit, stopLoss);
+  const longTermPlan = generateLongTermPlan(effectiveNav, technical, riskMetrics, costNav, totalCost, holdingShares, gainPct, market);
+  const recoveryPlan = generateRecoveryPlan(effectiveNav, costNav, totalCost, holdingShares, gainPct, riskMetrics, technical);
+
+  return {
+    fund: { id: fund.id, name: fund.name, code: fund.code, market_nav: mNav },
+    position: {
+      holdingShares: r4(holdingShares), costNav: r4(costNav),
+      totalCost: Math.round(totalCost * 100) / 100,
+      marketValue: Math.round(marketValue * 100) / 100,
+      gain: Math.round(gain * 100) / 100,
+      gainPct: Math.round(gainPct * 100) / 100,
+    },
+    technical, risk: riskMetrics, market, signals,
+    compositeScore, advice, shortTermPlan, longTermPlan, recoveryPlan, summary,
+    navHistory: navHistory.slice(-30),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** Batch decisions for all funds (mirrors GET /strategy/decisions/all) */
+export async function getBatchDecisions(estimates: Record<number, number>, modelVersion?: string) {
+  const funds = db.prepare(`
+    SELECT f.id, f.name, f.code, f.color,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares
+    FROM funds f LEFT JOIN transactions t ON t.fund_id = f.id
+    WHERE f.deleted_at IS NULL GROUP BY f.id
+  `).all() as any[];
+
+  const results: any[] = [];
+  const batchModel = modelVersion as ModelVersionId | undefined;
+  await Promise.all(funds.filter(f => f.holding_shares > 0).map(async (f) => {
+    const nav = estimates[f.id] || 0;
+    try {
+      const decision = await computeDecision(f.id, nav, batchModel);
+      logDecision(f.id, decision);
+      results.push({ fundId: f.id, name: f.name, code: f.code, color: f.color, ...decision });
+    } catch {
+      results.push({
+        fundId: f.id, name: f.name, code: f.code, color: f.color,
+        nav, action: 'hold', shares: 0, amount: 0, summary: '无法计算',
+        confidence: 0, position: { holdingShares: f.holding_shares, costNav: 0, gainPct: 0 },
+      });
+    }
+  }));
+  return results;
+}
+
+/** Batch forecasts for all funds (mirrors GET /strategy/forecasts/all) */
+export async function getBatchForecasts() {
+  const funds = db.prepare(`
+    SELECT f.id, f.name, f.code, f.color, f.market_nav
+    FROM funds f WHERE f.deleted_at IS NULL AND f.code IS NOT NULL AND f.code != ''
+  `).all() as any[];
+
+  const targetDate = getNextTradingDay();
+  const geoRisk = await fetchGeopoliticalRisk();
+  const results: any[] = [];
+
+  await Promise.all(funds.map(async (f) => {
+    try {
+      const navHistory = await fetchNavHistory(f.code, 60);
+      const navValues = navHistory.map(p => p.nav);
+      if (navValues.length < 10) {
+        results.push({ fundId: f.id, name: f.name, code: f.code, color: f.color, error: '历史数据不足' });
+        return;
+      }
+      const tech = calcTechnical(navValues);
+      const risk = calcRisk(navValues);
+      const newsScore = scoreNewsSentiment([]);
+      const marketCtx = await fetchMarketContext(f.name);
+      const capitalFlow = null;
+      const forecast = computeForecastCore(navValues, tech, risk, newsScore, marketCtx, capitalFlow, geoRisk);
+      const currentNav = navValues[navValues.length - 1];
+      const predictedNav = currentNav * (1 + forecast.predictedChangePct / 100);
+
+      // Upsert to forecasts table
+      try {
+        db.prepare(`
+          INSERT INTO forecasts (fund_id, target_date, direction, predicted_nav, predicted_change_pct, confidence, nav_range_low, nav_range_high, base_nav, factors, model_version)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(fund_id, target_date) DO UPDATE SET
+            direction=excluded.direction, predicted_nav=excluded.predicted_nav,
+            predicted_change_pct=excluded.predicted_change_pct, confidence=excluded.confidence,
+            nav_range_low=excluded.nav_range_low, nav_range_high=excluded.nav_range_high,
+            base_nav=excluded.base_nav, factors=excluded.factors, model_version=excluded.model_version,
+            created_at=datetime('now')
+        `).run(
+          f.id, targetDate, forecast.direction, r4(predictedNav), Math.round(forecast.predictedChangePct * 100) / 100,
+          forecast.confidence,
+          r4(currentNav * (1 + (forecast.predictedChangePct - Math.abs(forecast.predictedChangePct) * 0.5) / 100)),
+          r4(currentNav * (1 + (forecast.predictedChangePct + Math.abs(forecast.predictedChangePct) * 0.5) / 100)),
+          r4(currentNav), JSON.stringify(forecast.factors), FORECAST_MODEL_VERSION,
+        );
+      } catch { /* ignore upsert errors */ }
+
+      results.push({
+        fundId: f.id, name: f.name, code: f.code, color: f.color,
+        targetDate, direction: forecast.direction,
+        predictedNav: r4(predictedNav), currentNav: r4(currentNav),
+        predictedChangePct: Math.round(forecast.predictedChangePct * 100) / 100,
+        confidence: forecast.confidence, factors: forecast.factors,
+        rsi: Math.round(tech.rsi14), trend: tech.trend, trendScore: tech.trendScore,
+        volatility: Math.round(risk.volatility20d * 10) / 10,
+        modelVersion: FORECAST_MODEL_VERSION,
+      });
+    } catch {
+      results.push({ fundId: f.id, name: f.name, code: f.code, color: f.color, error: '预测失败' });
+    }
+  }));
+  return { targetDate, modelVersion: FORECAST_MODEL_VERSION, forecasts: results };
+}
+
+/** Forecast review summary (mirrors GET /strategy/forecast-reviews/summary) */
+export function getForecastReviewSummary(days: number = 30) {
+  const sinceDate = new Date();
+  sinceDate.setDate(sinceDate.getDate() - days);
+  const since = sinceDate.toISOString().slice(0, 10);
+
+  const stats = db.prepare(`
+    SELECT COUNT(*) as total, SUM(direction_correct) as correct,
+      AVG(error_pct) as avg_error, SUM(within_range) as in_range
+    FROM forecast_reviews WHERE target_date >= ?
+  `).get(since) as any;
+
+  const byFund = db.prepare(`
+    SELECT r.fund_id, f.name, f.code, f.color,
+      COUNT(*) as total, SUM(r.direction_correct) as correct,
+      AVG(r.error_pct) as avg_error, SUM(r.within_range) as in_range
+    FROM forecast_reviews r JOIN funds f ON f.id = r.fund_id
+    WHERE r.target_date >= ? GROUP BY r.fund_id
+    ORDER BY CAST(SUM(r.direction_correct) AS REAL) / MAX(COUNT(*), 1) DESC
+  `).all(since) as any[];
+
+  const recent = db.prepare(`
+    SELECT r.*, f.name as fund_name, f.code as fund_code, f.color as fund_color,
+      fc.direction, fc.predicted_nav, fc.predicted_change_pct, fc.confidence, fc.factors
+    FROM forecast_reviews r JOIN funds f ON f.id = r.fund_id
+    JOIN forecasts fc ON fc.id = r.forecast_id
+    ORDER BY r.target_date DESC, r.fund_id LIMIT 20
+  `).all() as any[];
+
+  return {
+    stats: {
+      total: stats.total || 0, correct: stats.correct || 0,
+      accuracy: stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0,
+      avgError: Math.round((stats.avg_error || 0) * 100) / 100,
+      inRange: stats.in_range || 0,
+      inRangePct: stats.total > 0 ? Math.round((stats.in_range / stats.total) * 100) : 0,
+    },
+    byFund: byFund.map(f => ({
+      ...f, accuracy: f.total > 0 ? Math.round((f.correct / f.total) * 100) : 0,
+      avg_error: Math.round((f.avg_error || 0) * 100) / 100,
+      inRangePct: f.total > 0 ? Math.round((f.in_range / f.total) * 100) : 0,
+    })),
+    recent: recent.map(r => ({
+      ...r, factors: undefined,
+      factorsParsed: (() => { try { return JSON.parse(r.factors || '{}'); } catch { return {}; } })(),
+    })),
+    days,
+  };
+}
+
+/** Get decision logs (mirrors GET /strategy/decision-logs) */
+export function getDecisionLogs(fundId?: number, days: number = 30) {
+  const since = new Date(); since.setDate(since.getDate() - days);
+  const sinceStr = since.toISOString().slice(0, 10);
+  let query = `SELECT d.*, f.name as fund_name, f.code as fund_code, f.color as fund_color
+    FROM decision_logs d JOIN funds f ON f.id = d.fund_id WHERE d.date >= ?`;
+  const params: any[] = [sinceStr];
+  if (fundId) { query += ' AND d.fund_id = ?'; params.push(fundId); }
+  query += ' ORDER BY d.date DESC, d.created_at DESC';
+  const rows = db.prepare(query).all(...params) as any[];
+  return {
+    logs: rows.map(r => ({ ...r, reasoning: (() => { try { return JSON.parse(r.reasoning || '[]'); } catch { return []; } })() })),
+    currentVersions: { forecast: FORECAST_MODEL_VERSION, decision: DECISION_MODEL_VERSION },
+  };
+}
+
+/** Get forecast history for a fund (mirrors GET /strategy/forecasts/fund/:id) */
+export function getForecastHistory(fundId: number, limit: number = 30) {
+  const rows = db.prepare(`
+    SELECT f.*, r.actual_nav, r.actual_change_pct, r.direction_correct, r.error_pct, r.within_range, r.analysis
+    FROM forecasts f LEFT JOIN forecast_reviews r ON r.forecast_id = f.id
+    WHERE f.fund_id = ? ORDER BY f.target_date DESC LIMIT ?
+  `).all(fundId, limit) as any[];
+  return rows.map(r => ({
+    ...r, factors: (() => { try { return JSON.parse(r.factors || '{}'); } catch { return {}; } })(),
+  }));
+}
+
+/** Single fund forecast (mirrors GET /strategy/funds/:id/forecast) */
+export async function getSingleForecast(fundId: number, estimateNav?: number) {
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+  if (!fund) throw { status: 404, error: '基金不存在' };
+  const nav = (estimateNav && estimateNav > 0) ? estimateNav : (fund.market_nav || 0);
+  if (nav <= 0) throw { status: 400, error: '无当前净值' };
+  const hasEstimate = !!(estimateNav && estimateNav > 0);
+
+  let navHistory: NavPoint[] = [];
+  let fundamental: any = null; let news: any[] = []; let marketCtx: any = null; let fcHoldings: any = null;
+  const sectorKeyword = inferSectorKeyword(fund.name);
+  const promises: Promise<void>[] = [];
+  if (fund.code) {
+    promises.push(fetchNavHistory(fund.code, 60).then(h => { navHistory = h; }));
+    promises.push(fetchFundamental(fund.code).then(f => { fundamental = f; }));
+    promises.push(fetchFundHoldings(fund.code).then(h => { fcHoldings = h; }));
+  }
+  promises.push(fetchSectorNews(sectorKeyword, 10).then(n => { news = n; }));
+  promises.push(fetchMarketContext(fund.name).then(m => { marketCtx = m; }));
+  await Promise.all(promises);
+  const [capitalFlow, geoRisk] = await Promise.all([fetchCapitalFlow(fund.name, fcHoldings?.holdings), fetchGeopoliticalRisk()]);
+
+  const navValues = navHistory.map(p => p.nav);
+  if (hasEstimate && navValues.length > 0 && Math.abs(estimateNav! - navValues[navValues.length - 1]) > 0.0001) navValues.push(estimateNav!);
+  if (navValues.length < 5) return { error: null, prediction: null, message: '历史数据不足，无法预测' };
+
+  const baseDate = hasEstimate ? toLocalDateStr(new Date()) + '(估值)' : (navHistory.length > 0 ? navHistory[navHistory.length - 1].date : toLocalDateStr(new Date()));
+  const targetDate = getNextTradingDay();
+  const tech = calcTechnical(navValues);
+  const riskM = calcRisk(navValues);
+  const fundScore = fundamental ? scoreFundamental(fundamental) : { score: 0, highlights: [] };
+  const newsScore = scoreNewsSentiment(news);
+  const current = navValues[navValues.length - 1];
+  const atrPct = tech.atr14 > 0 ? (tech.atr14 / current) * 100 : 0.5;
+  const forecastResult = computeForecastCore(navValues, tech, riskM, newsScore, marketCtx, capitalFlow, geoRisk);
+  const { predictedChangePct, direction, confidence } = forecastResult;
+  const predictedNav = Math.round((current * (1 + predictedChangePct / 100)) * 10000) / 10000;
+  const upBias = predictedChangePct > 0 ? 1.3 : 1.0;
+  const downBias = predictedChangePct < 0 ? 1.3 : 1.0;
+  const navHigh = Math.round((current + tech.atr14 * 1.2 * upBias) * 10000) / 10000;
+  const navLow = Math.round((current - tech.atr14 * 1.2 * downBias) * 10000) / 10000;
+  const changes = navValues.slice(-10).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100);
+  const mom3d = changes.slice(-3).reduce((a, b) => a + b, 0);
+  const mom5d = changes.slice(-5).reduce((a, b) => a + b, 0);
+  const deviationFromMA20 = ((current - tech.ma20) / tech.ma20) * 100;
+  const deviationFromMA5 = ((current - tech.ma5) / tech.ma5) * 100;
+
+  const posRow = db.prepare(`SELECT COALESCE(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END),0)-COALESCE(SUM(CASE WHEN type='sell' THEN shares ELSE 0 END),0) as holding_shares, COALESCE(SUM(CASE WHEN type='buy' THEN shares*price ELSE 0 END),0)-COALESCE(SUM(CASE WHEN type='sell' THEN shares*price ELSE 0 END),0)+COALESCE(SUM(CASE WHEN type='dividend' THEN price ELSE 0 END),0) as cost_basis FROM transactions WHERE fund_id=?`).get(fundId) as any;
+  const holdingShares = posRow.holding_shares;
+  const totalCost = posRow.cost_basis;
+  const costNav = holdingShares > 0 && totalCost > 0 ? totalCost / holdingShares : 0;
+  const basePct = fund.base_position_pct ?? 30;
+  const baseShares = r4(holdingShares * basePct / 100);
+  const swingShares = r4(holdingShares - baseShares);
+  const stopProfit = fund.stop_profit_pct || 20;
+  const stopLoss = fund.stop_loss_pct || 15;
+  const gainPct = costNav > 0 ? ((nav - costNav) / costNav) * 100 : 0;
+
+  let action: 'buy' | 'sell' | 'hold' = 'hold'; let shares = 0; let amount = 0;
+  const strategies: string[] = [];
+  if (direction === 'down') {
+    if (gainPct > 5 && swingShares > 0) { action = 'sell'; shares = Math.round(swingShares * 0.15 * 100) / 100; amount = Math.round(shares * nav * 100) / 100; strategies.push(`预测${targetDate}下跌${Math.abs(predictedChangePct).toFixed(2)}%，今日先止盈${shares}份`); strategies.push(`明日跌至¥${navLow}附近可接回`); }
+    else if (swingShares > 0 && Math.abs(predictedChangePct) > 0.5) { action = 'sell'; shares = Math.round(swingShares * 0.10 * 100) / 100; amount = Math.round(shares * nav * 100) / 100; strategies.push(`预测${targetDate}下跌${Math.abs(predictedChangePct).toFixed(2)}%，建议减仓${shares}份`); }
+    else { strategies.push(`预测${targetDate}下跌${Math.abs(predictedChangePct).toFixed(2)}%，今日不宜买入`); strategies.push(`等待明日低点¥${navLow}附近再补仓`); }
+  } else if (direction === 'up') {
+    if (gainPct < -3) { const factor = Math.min(2, 1 + Math.abs(gainPct) / 15); amount = Math.round(500 * factor); shares = Math.round(amount / nav * 100) / 100; action = 'buy'; strategies.push(`预测${targetDate}上涨${predictedChangePct.toFixed(2)}%，建议买入${shares}份`); }
+    else if (gainPct >= stopProfit && swingShares > 0) { strategies.push(`盈利${gainPct.toFixed(1)}%已达止盈线，预测还涨，持有一天`); }
+    else { strategies.push(`预测${targetDate}上涨${predictedChangePct.toFixed(2)}%，持有等涨`); }
+  } else { strategies.push(`预测${targetDate}横盘震荡`); if (gainPct < -5) { action = 'buy'; amount = 300; shares = Math.round(amount / nav * 100) / 100; strategies.push(`亏损${Math.abs(gainPct).toFixed(1)}%，小额定投`); } }
+
+  const reasoning: string[] = [];
+  reasoning.push(`[动量] 近3日${mom3d >= 0 ? '+' : ''}${mom3d.toFixed(2)}%，趋势因子${forecastResult.factors.trend >= 0 ? '+' : ''}${forecastResult.factors.trend.toFixed(3)}`);
+  reasoning.push(`[RSI] ${tech.rsi14.toFixed(0)} → ${forecastResult.factors.rsi >= 0 ? '+' : ''}${forecastResult.factors.rsi.toFixed(3)}`);
+  reasoning.push(`[布林] %B=${tech.bollingerBands.percentB.toFixed(0)} → ${forecastResult.factors.bollinger >= 0 ? '+' : ''}${forecastResult.factors.bollinger.toFixed(3)}`);
+  if (geoRisk && geoRisk.signals.length > 0) reasoning.push(`[地缘] ${geoRisk.riskDetail}（评分${geoRisk.riskScore}）`);
+
+  const recentChanges = navHistory.slice(-20).map((p, i, a) => i === 0 ? 0 : ((p.nav - a[i-1].nav) / a[i-1].nav) * 100).slice(1);
+  const upDays = recentChanges.filter(c => c > 0).length;
+  const downDays = recentChanges.filter(c => c < 0).length;
+
+  return {
+    fundName: fund.name, currentNav: nav, baseDate, targetDate, hasEstimate,
+    prediction: { direction, predictedNav, predictedChangePct: Math.round(predictedChangePct * 100) / 100, navRange: { high: navHigh, low: navLow }, confidence: Math.round(confidence) },
+    strategy: { action, shares, amount, strategies },
+    factors: {
+      trend: { value: Math.round(forecastResult.factors.trend * 1000) / 1000, label: '趋势动量', mom3d: Math.round(mom3d * 100) / 100, mom5d: Math.round(mom5d * 100) / 100 },
+      reversion: { value: Math.round(forecastResult.factors.reversion * 1000) / 1000, label: '均值回归', deviationMA20: Math.round(deviationFromMA20 * 100) / 100 },
+      rsi: { value: Math.round(forecastResult.factors.rsi * 1000) / 1000, label: 'RSI', rsi14: tech.rsi14 },
+      macd: { value: Math.round(forecastResult.factors.macd * 1000) / 1000, label: 'MACD', histogram: tech.macd.histogram > 0 ? 'red' : 'green' },
+      bollinger: { value: Math.round(forecastResult.factors.bollinger * 1000) / 1000, label: '布林带', percentB: Math.round(tech.bollingerBands.percentB) },
+      news: { value: Math.round(forecastResult.factors.news * 1000) / 1000, label: '消息面', score: newsScore.score },
+      market: { value: Math.round(forecastResult.factors.market * 1000) / 1000, label: '大盘环境' },
+      supportResistance: { value: Math.round(forecastResult.factors.supportResistance * 1000) / 1000, label: '支撑阻力' },
+      crossTimeframe: { value: Math.round(forecastResult.factors.crossTimeframe * 1000) / 1000, label: '跨周期确认' },
+      gap: { value: Math.round(forecastResult.factors.gap * 1000) / 1000, label: '缺口回补' },
+      capitalFlow: { value: Math.round((forecastResult.factors.capitalFlow || 0) * 1000) / 1000, label: '资金流向', score: capitalFlow?.flowScore ?? 0 },
+    },
+    position: { holdingShares, costNav: r4(costNav), gainPct: Math.round(gainPct * 100) / 100, baseShares, swingShares },
+    stats: { recent20: { upDays, downDays, avgUp: recentChanges.filter(c => c > 0).length > 0 ? Math.round(recentChanges.filter(c => c > 0).reduce((a, b) => a + b, 0) / upDays * 100) / 100 : 0, avgDown: recentChanges.filter(c => c < 0).length > 0 ? Math.round(recentChanges.filter(c => c < 0).reduce((a, b) => a + b, 0) / downDays * 100) / 100 : 0 }, volatility: riskM.volatility20d, atrPct: Math.round(atrPct * 100) / 100 },
+    reasoning,
+    fundamentalHighlights: fundScore.highlights,
+    geoRisk: geoRisk && geoRisk.signals.length > 0 ? { riskScore: geoRisk.riskScore, riskLevel: geoRisk.riskLevel, riskDetail: geoRisk.riskDetail, signals: geoRisk.signals } : null,
+    capitalFlow: capitalFlow ? { flowScore: capitalFlow.flowScore, flowLabel: capitalFlow.flowLabel, flowDetail: capitalFlow.flowDetail } : null,
+    modelVersion: FORECAST_MODEL_VERSION, timestamp: new Date().toISOString(),
+  };
+}
+
+/** Trade analysis (mirrors GET /strategy/trade-analysis) */
+export { fetchCapitalFlow, fetchFundamental, fetchFundHoldings, fetchSectorNews, inferSectorKeyword, scoreFundamental };
+
 export default router;

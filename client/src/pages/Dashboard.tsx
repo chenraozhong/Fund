@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { api } from '../api'
 import type { Summary, Allocation, Fund, BatchDecision, BatchForecast, EstimateData, ForecastReviewSummary } from '../api'
@@ -94,9 +94,9 @@ export default function Dashboard() {
       <div className="text-center py-20">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">欢迎使用投资组合管理</h2>
         <p className="text-gray-500 mb-6">创建你的第一个基金，开始追踪投资吧。</p>
-        <a href="/funds" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <Link to="/funds" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           创建基金
-        </a>
+        </Link>
       </div>
     )
   }

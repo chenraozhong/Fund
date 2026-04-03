@@ -441,4 +441,74 @@ router.post('/execute', async (req: Request, res: Response) => {
   }
 });
 
+// Exported service functions for local-router
+export async function importPreview(text: string) {
+  if (!text) throw { status: 400, error: '请输入导入数据' };
+  const parsed = parseImportText(text);
+  if (parsed.length === 0) throw { status: 400, error: '未识别到任何基金数据，请检查格式' };
+  const avgNavErrors = await fillMissingAvgNav(parsed);
+  const { funds, errors } = await fillMissingNavs(parsed);
+  const allErrors = [...avgNavErrors, ...errors];
+  const preview = funds.map(f => {
+    const { baseShares, basePrice, baseAmount } = calcBase(f);
+    const costBasis = f.totalShares * f.avgNav;
+    const marketNav = (f as any)._marketNav
+      || (f.totalShares > 0 ? Math.round(((costBasis + f.gain) / f.totalShares) * 10000) / 10000 : 0);
+    const existing = f.code ? db.prepare('SELECT id, name FROM funds WHERE code = ?').get(f.code) as any : null;
+    return {
+      name: f.name, code: f.code, totalShares: f.totalShares, avgNav: f.avgNav, gain: f.gain,
+      marketNav, baseShares, basePrice, baseAmount, recentTransactions: f.transactions,
+      transactionCount: f.transactions.length + (baseShares > 0 ? 1 : 0),
+      existingFundId: existing?.id || null, existingFundName: existing?.name || null,
+    };
+  });
+  return { funds: preview, navErrors: allErrors };
+}
+
+export async function importExecute(text: string) {
+  if (!text) throw { status: 400, error: '请输入导入数据' };
+  const parsed = parseImportText(text);
+  if (parsed.length === 0) throw { status: 400, error: '未识别到任何基金数据' };
+  await fillMissingAvgNav(parsed);
+  const { funds } = await fillMissingNavs(parsed);
+  const results: { name: string; fundId: number; transactionCount: number }[] = [];
+  const importAll = db.transaction(() => {
+    for (const f of funds) {
+      const costBasis = f.totalShares * f.avgNav;
+      const marketNav = (f as any)._marketNav
+        || (f.totalShares > 0 ? Math.round(((costBasis + f.gain) / f.totalShares) * 10000) / 10000 : 0);
+      let fundId: number;
+      const existing = f.code ? db.prepare('SELECT * FROM funds WHERE code = ?').get(f.code) as any : null;
+      if (existing) {
+        db.prepare('UPDATE funds SET name = ?, market_nav = ? WHERE id = ?').run(f.name, marketNav, existing.id);
+        fundId = existing.id;
+      } else {
+        const fundResult = db.prepare('INSERT INTO funds (name, code, market_nav) VALUES (?, ?, ?)').run(f.name, f.code, marketNav);
+        fundId = fundResult.lastInsertRowid as number;
+      }
+      let txCount = 0;
+      const { baseShares, basePrice } = calcBase(f);
+      if (baseShares > 0 && basePrice > 0) {
+        const earliestDate = f.transactions.length > 0
+          ? f.transactions.reduce((min, t) => t.date < min ? t.date : min, f.transactions[0].date)
+          : new Date().toISOString().slice(0, 10);
+        const baseDate = new Date(earliestDate + 'T00:00:00');
+        baseDate.setDate(baseDate.getDate() - 1);
+        const baseDateStr = baseDate.toISOString().slice(0, 10);
+        db.prepare('INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(fundId, baseDateStr, 'buy', f.name, baseShares, basePrice, '历史持仓（导入）');
+        txCount++;
+      }
+      for (const tx of f.transactions) {
+        db.prepare('INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(fundId, tx.date, tx.type, f.name, tx.shares, tx.price, null);
+        txCount++;
+      }
+      results.push({ name: f.name, fundId, transactionCount: txCount });
+    }
+  });
+  importAll();
+  return { success: true, imported: results };
+}
+
 export default router;

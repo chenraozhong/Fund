@@ -442,55 +442,51 @@ export default function Funds() {
             const est = estimates[f.id]
             return (
               <div key={f.id} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
-                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer group" onClick={() => navigate(`/funds/${f.id}`)}>
-                  {/* 色条 */}
-                  <div className="w-1.5 h-12 rounded-full shrink-0" style={{ backgroundColor: f.color }} />
-                  {/* 基金信息 */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium text-sm text-gray-900 truncate">{f.name}</span>
-                      {f.code && <span className="text-[11px] text-gray-400 shrink-0">{f.code}</span>}
-                      <span className="text-[10px] text-gray-400 shrink-0">{alloc.toFixed(1)}%</span>
+                <div className="px-4 py-3 cursor-pointer group" onClick={() => navigate(`/funds/${f.id}`)}>
+                  {/* 第一行：名称 + 市值 */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <div className="w-1.5 h-8 rounded-full shrink-0" style={{ backgroundColor: f.color }} />
+                      <div className="min-w-0">
+                        <span className="font-medium text-sm text-gray-900 truncate block">{f.name}</span>
+                        {f.code && <span className="text-[11px] text-gray-400">{f.code}</span>}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-semibold text-gray-900">{fmt(f.current_value)}</div>
+                    </div>
+                  </div>
+                  {/* 第二行：净值/估值 + 盈亏 + 收益率 + 操作 */}
+                  <div className="flex items-center justify-between mt-1.5 ml-[18px]">
+                    <div className="flex items-center gap-2 text-xs text-gray-500 min-w-0 flex-1">
                       {est ? (<>
                         <span className="font-mono">{est.gsz.toFixed(4)}</span>
                         <span className={`font-medium ${est.gszzl >= 0 ? 'text-red-500' : 'text-green-600'}`}>{est.gszzl >= 0 ? '+' : ''}{est.gszzl.toFixed(2)}%</span>
-                        <span className="text-[10px] text-gray-400">{est.gztime?.slice(11, 16)}</span>
                       </>) : f.market_nav > 0 ? (
                         <span className="font-mono">{f.market_nav.toFixed(4)}</span>
                       ) : null}
-                      {costNav > 0 && <span className="text-gray-400">成本 {costNav.toFixed(4)}</span>}
+                      <span className="text-[10px] text-gray-400">{alloc.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-xs font-medium ${f.gain >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {f.gain >= 0 ? '+' : ''}{fmt(f.gain)}
+                      </span>
+                      <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-bold ${
+                        f.gain_pct >= 5 ? 'bg-emerald-100 text-emerald-700' :
+                        f.gain_pct >= 0 ? 'bg-emerald-50 text-emerald-600' :
+                        f.gain_pct >= -5 ? 'bg-red-50 text-red-600' :
+                        'bg-red-100 text-red-700'
+                      }`}>{pct(f.gain_pct)}</span>
                     </div>
                   </div>
-                  {/* 市值 */}
-                  <div className="text-right shrink-0">
-                    <div className="text-sm font-semibold text-gray-900">{fmt(f.current_value)}</div>
-                    <div className={`text-xs font-medium ${f.gain >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {f.gain >= 0 ? '+' : ''}{fmt(f.gain)}
-                    </div>
-                  </div>
-                  {/* 收益率 */}
-                  <div className="shrink-0">
-                    <span className={`inline-block px-2.5 py-1 rounded-lg text-xs font-bold ${
-                      f.gain_pct >= 5 ? 'bg-emerald-100 text-emerald-700' :
-                      f.gain_pct >= 0 ? 'bg-emerald-50 text-emerald-600' :
-                      f.gain_pct >= -5 ? 'bg-red-50 text-red-600' :
-                      'bg-red-100 text-red-700'
-                    }`}>{pct(f.gain_pct)}</span>
-                  </div>
-                  {/* 操作按钮 */}
-                  <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                  {/* 操作按钮行 */}
+                  <div className="flex gap-1.5 mt-2 ml-[18px]" onClick={e => e.stopPropagation()}>
                     <button onClick={() => openTxForm(f)}
-                      className="px-2.5 py-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors">交易</button>
+                      className="px-2.5 py-1 text-xs font-medium text-emerald-600 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors">交易</button>
                     <button onClick={() => startEdit(f)}
-                      className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                    </button>
+                      className="px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors">编辑</button>
                     <button onClick={() => setDeleteId(f.id)}
-                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                    </button>
+                      className="px-2.5 py-1 text-xs font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors">删除</button>
                   </div>
                 </div>
                 {/* 内嵌交易表单 */}

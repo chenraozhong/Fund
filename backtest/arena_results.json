@@ -1,0 +1,1272 @@
+{
+  "timestamp": "2026-04-02T16:46:49.481902",
+  "elapsed_seconds": 12713.7,
+  "n_funds": 21,
+  "n_strategies": 8,
+  "champion": {
+    "name": "自适应混合_v3_f1",
+    "composite_score": 92.274,
+    "avg_metrics": {
+      "sharpe": 1.573,
+      "total_return": 37.41,
+      "max_drawdown": -8.58,
+      "calmar": 3.45,
+      "crash_avoidance": 2.675,
+      "win_rate": 43.9,
+      "annual_return": 25.52
+    },
+    "params": {
+      "trend_trend_w": 0.7955560284059725,
+      "trend_reversion_w": 0.037492033237332134,
+      "range_trend_w": 0.3200408233435631,
+      "range_reversion_w": 0.17991264001441737,
+      "rsi_weight": 0.037308459463593555,
+      "rsi_overbought": 60,
+      "rsi_oversold": 31,
+      "rsi_extreme_high": 76,
+      "rsi_extreme_low": 22,
+      "macd_weight": 0.23249474437080989,
+      "macd_golden_cross_boost": 0.38579756669221094,
+      "bb_weight": 0.022068954825292253,
+      "market_weight": 0.11583259712406256,
+      "vol_high": 24,
+      "vol_adj": 0.6261794237385251,
+      "atr_exit_mult": 2.276315374957632,
+      "divergence_lookback": 9,
+      "divergence_weight": 0.20123410973870656,
+      "streak_decay_3": 0.8697281789336124,
+      "streak_decay_5": 0.35017088982195155
+    },
+    "fund_details": [
+      {
+        "total_return": 55.17,
+        "annual_return": 33.51,
+        "sharpe": 1.939,
+        "max_drawdown": -9.25,
+        "calmar": 3.624,
+        "win_rate": 51.3,
+        "pl_ratio": 1.29,
+        "n_trades": 380,
+        "final_value": 155169.16,
+        "n_buy_trades": 109,
+        "n_sell_trades": 81,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.194,
+        "fund": "华安黄金ETF联接C",
+        "code": "000217",
+        "sector": "黄金"
+      },
+      {
+        "total_return": 31.9,
+        "annual_return": 19.98,
+        "sharpe": 1.475,
+        "max_drawdown": -7.0,
+        "calmar": 2.857,
+        "win_rate": 40.3,
+        "pl_ratio": 1.6,
+        "n_trades": 380,
+        "final_value": 131902.48,
+        "n_buy_trades": 53,
+        "n_sell_trades": 97,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.941,
+        "fund": "华安国证机器人产业指数C",
+        "code": "020982",
+        "sector": "AI/机器人"
+      },
+      {
+        "total_return": 29.66,
+        "annual_return": 18.64,
+        "sharpe": 1.204,
+        "max_drawdown": -13.28,
+        "calmar": 1.404,
+        "win_rate": 42.6,
+        "pl_ratio": 1.39,
+        "n_trades": 380,
+        "final_value": 129664.17,
+        "n_buy_trades": 39,
+        "n_sell_trades": 108,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.589,
+        "fund": "广发港股创新药ETF联接C",
+        "code": "019671",
+        "sector": "医药/生物"
+      },
+      {
+        "total_return": 14.38,
+        "annual_return": 9.24,
+        "sharpe": 0.611,
+        "max_drawdown": -9.69,
+        "calmar": 0.954,
+        "win_rate": 40.5,
+        "pl_ratio": 1.39,
+        "n_trades": 380,
+        "final_value": 114375.63,
+        "n_buy_trades": 89,
+        "n_sell_trades": 100,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.271,
+        "fund": "易方达中证万得生物科技C",
+        "code": "010572",
+        "sector": "医药/生物"
+      },
+      {
+        "total_return": 53.57,
+        "annual_return": 32.61,
+        "sharpe": 1.901,
+        "max_drawdown": -9.23,
+        "calmar": 3.531,
+        "win_rate": 51.6,
+        "pl_ratio": 1.26,
+        "n_trades": 380,
+        "final_value": 153566.84,
+        "n_buy_trades": 112,
+        "n_sell_trades": 78,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.129,
+        "fund": "博时黄金ETF联接C",
+        "code": "002611",
+        "sector": "黄金"
+      },
+      {
+        "total_return": 56.19,
+        "annual_return": 34.09,
+        "sharpe": 1.969,
+        "max_drawdown": -9.14,
+        "calmar": 3.73,
+        "win_rate": 51.3,
+        "pl_ratio": 1.3,
+        "n_trades": 380,
+        "final_value": 156194.53,
+        "n_buy_trades": 111,
+        "n_sell_trades": 80,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.236,
+        "fund": "国泰黄金ETF联接C",
+        "code": "004253",
+        "sector": "黄金"
+      },
+      {
+        "total_return": 49.11,
+        "annual_return": 30.06,
+        "sharpe": 1.668,
+        "max_drawdown": -7.86,
+        "calmar": 3.824,
+        "win_rate": 41.6,
+        "pl_ratio": 1.47,
+        "n_trades": 380,
+        "final_value": 149106.05,
+        "n_buy_trades": 75,
+        "n_sell_trades": 71,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.454,
+        "fund": "易方达消费电子ETF联接C",
+        "code": "018897",
+        "sector": "消费/传媒"
+      },
+      {
+        "total_return": 47.81,
+        "annual_return": 42.65,
+        "sharpe": 2.844,
+        "max_drawdown": -4.33,
+        "calmar": 9.861,
+        "win_rate": 48.4,
+        "pl_ratio": 1.81,
+        "n_trades": 275,
+        "final_value": 147811.65,
+        "n_buy_trades": 20,
+        "n_sell_trades": 59,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 3.313,
+        "fund": "华宝创业板AI ETF联接C",
+        "code": "023408",
+        "sector": "AI/机器人"
+      },
+      {
+        "total_return": 46.02,
+        "annual_return": 28.28,
+        "sharpe": 1.6,
+        "max_drawdown": -6.93,
+        "calmar": 4.081,
+        "win_rate": 40.8,
+        "pl_ratio": 1.32,
+        "n_trades": 380,
+        "final_value": 146019.98,
+        "n_buy_trades": 81,
+        "n_sell_trades": 74,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.816,
+        "fund": "广发中证光伏产业指数C",
+        "code": "012365",
+        "sector": "新能源/光伏"
+      },
+      {
+        "total_return": 44.58,
+        "annual_return": 30.83,
+        "sharpe": 1.926,
+        "max_drawdown": -5.22,
+        "calmar": 5.905,
+        "win_rate": 45.5,
+        "pl_ratio": 1.62,
+        "n_trades": 343,
+        "final_value": 144584.71,
+        "n_buy_trades": 26,
+        "n_sell_trades": 128,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.953,
+        "fund": "永赢科技智选混合C",
+        "code": "022365",
+        "sector": "混合/主题"
+      },
+      {
+        "total_return": 7.97,
+        "annual_return": 5.17,
+        "sharpe": 0.311,
+        "max_drawdown": -10.67,
+        "calmar": 0.485,
+        "win_rate": 41.3,
+        "pl_ratio": 1.28,
+        "n_trades": 380,
+        "final_value": 107966.04,
+        "n_buy_trades": 92,
+        "n_sell_trades": 106,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.306,
+        "fund": "易方达中证生物科技ETF联接C",
+        "code": "019325",
+        "sector": "医药/生物"
+      },
+      {
+        "total_return": 13.62,
+        "annual_return": 27.84,
+        "sharpe": 1.798,
+        "max_drawdown": -4.55,
+        "calmar": 6.122,
+        "win_rate": 33.1,
+        "pl_ratio": 1.72,
+        "n_trades": 130,
+        "final_value": 113622.59,
+        "n_buy_trades": 7,
+        "n_sell_trades": 27,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 3.198,
+        "fund": "永赢先锋半导体智选混合C",
+        "code": "025209",
+        "sector": "半导体/芯片"
+      },
+      {
+        "total_return": 39.76,
+        "annual_return": 24.64,
+        "sharpe": 1.185,
+        "max_drawdown": -9.32,
+        "calmar": 2.645,
+        "win_rate": 41.3,
+        "pl_ratio": 1.42,
+        "n_trades": 380,
+        "final_value": 139762.17,
+        "n_buy_trades": 70,
+        "n_sell_trades": 70,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.557,
+        "fund": "永赢低碳环保智选混合C",
+        "code": "016387",
+        "sector": "新能源/光伏"
+      },
+      {
+        "total_return": 17.52,
+        "annual_return": 25.93,
+        "sharpe": 1.969,
+        "max_drawdown": -6.67,
+        "calmar": 3.89,
+        "win_rate": 42.9,
+        "pl_ratio": 1.6,
+        "n_trades": 175,
+        "final_value": 117515.52,
+        "n_buy_trades": 16,
+        "n_sell_trades": 32,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.788,
+        "fund": "永赢国证商用卫星通信C",
+        "code": "024195",
+        "sector": "混合/主题"
+      },
+      {
+        "total_return": 49.74,
+        "annual_return": 30.42,
+        "sharpe": 2.015,
+        "max_drawdown": -10.28,
+        "calmar": 2.96,
+        "win_rate": 47.9,
+        "pl_ratio": 1.39,
+        "n_trades": 380,
+        "final_value": 149736.16,
+        "n_buy_trades": 81,
+        "n_sell_trades": 83,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.826,
+        "fund": "广发中证传媒ETF联接C",
+        "code": "004753",
+        "sector": "消费/传媒"
+      },
+      {
+        "total_return": 38.45,
+        "annual_return": 23.87,
+        "sharpe": 1.507,
+        "max_drawdown": -8.13,
+        "calmar": 2.936,
+        "win_rate": 47.1,
+        "pl_ratio": 1.14,
+        "n_trades": 380,
+        "final_value": 138449.39,
+        "n_buy_trades": 51,
+        "n_sell_trades": 97,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.943,
+        "fund": "广发远见智选混合C",
+        "code": "016874",
+        "sector": "混合/主题"
+      },
+      {
+        "total_return": 39.99,
+        "annual_return": 24.77,
+        "sharpe": 1.518,
+        "max_drawdown": -7.37,
+        "calmar": 3.362,
+        "win_rate": 42.1,
+        "pl_ratio": 1.2,
+        "n_trades": 380,
+        "final_value": 139985.03,
+        "n_buy_trades": 78,
+        "n_sell_trades": 71,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.914,
+        "fund": "嘉实清洁能源股票C",
+        "code": "017074",
+        "sector": "新能源/光伏"
+      },
+      {
+        "total_return": 41.98,
+        "annual_return": 25.93,
+        "sharpe": 1.366,
+        "max_drawdown": -17.4,
+        "calmar": 1.491,
+        "win_rate": 47.9,
+        "pl_ratio": 1.21,
+        "n_trades": 380,
+        "final_value": 141977.32,
+        "n_buy_trades": 82,
+        "n_sell_trades": 74,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.335,
+        "fund": "南方有色金属ETF联接E",
+        "code": "010990",
+        "sector": "有色/稀土"
+      },
+      {
+        "total_return": 36.24,
+        "annual_return": 22.56,
+        "sharpe": 1.481,
+        "max_drawdown": -8.27,
+        "calmar": 2.728,
+        "win_rate": 41.1,
+        "pl_ratio": 1.29,
+        "n_trades": 380,
+        "final_value": 136240.88,
+        "n_buy_trades": 101,
+        "n_sell_trades": 67,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 3.072,
+        "fund": "南方中证新能源ETF联接C",
+        "code": "012832",
+        "sector": "新能源/光伏"
+      },
+      {
+        "total_return": 38.26,
+        "annual_return": 23.75,
+        "sharpe": 1.577,
+        "max_drawdown": -6.33,
+        "calmar": 3.754,
+        "win_rate": 42.4,
+        "pl_ratio": 1.45,
+        "n_trades": 380,
+        "final_value": 138258.07,
+        "n_buy_trades": 65,
+        "n_sell_trades": 92,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.631,
+        "fund": "嘉实中证稀土产业ETF联接C",
+        "code": "011036",
+        "sector": "有色/稀土"
+      },
+      {
+        "total_return": 33.77,
+        "annual_return": 21.1,
+        "sharpe": 1.159,
+        "max_drawdown": -9.17,
+        "calmar": 2.3,
+        "win_rate": 40.8,
+        "pl_ratio": 1.38,
+        "n_trades": 380,
+        "final_value": 133768.04,
+        "n_buy_trades": 66,
+        "n_sell_trades": 82,
+        "strategy": "自适应混合_v3_f1",
+        "crash_avoidance": 2.7,
+        "fund": "华夏国证半导体芯片ETF联接C",
+        "code": "008888",
+        "sector": "半导体/芯片"
+      }
+    ]
+  },
+  "tournament_rankings": [
+    {
+      "rank": 1,
+      "name": "自适应混合_v3_f1",
+      "composite_score": 92.274,
+      "avg_metrics": {
+        "sharpe": 1.573,
+        "total_return": 37.41,
+        "max_drawdown": -8.58,
+        "calmar": 3.45,
+        "crash_avoidance": 2.675,
+        "win_rate": 43.9,
+        "annual_return": 25.52
+      }
+    },
+    {
+      "rank": 2,
+      "name": "自适应混合_v3_f2",
+      "composite_score": 91.952,
+      "avg_metrics": {
+        "sharpe": 1.571,
+        "total_return": 37.33,
+        "max_drawdown": -8.49,
+        "calmar": 3.375,
+        "crash_avoidance": 2.662,
+        "win_rate": 44.0,
+        "annual_return": 25.43
+      }
+    },
+    {
+      "rank": 3,
+      "name": "自适应混合_v3",
+      "composite_score": 91.291,
+      "avg_metrics": {
+        "sharpe": 1.543,
+        "total_return": 36.92,
+        "max_drawdown": -8.39,
+        "calmar": 3.319,
+        "crash_avoidance": 2.699,
+        "win_rate": 43.9,
+        "annual_return": 24.81
+      }
+    },
+    {
+      "rank": 4,
+      "name": "自适应混合_v3_f3",
+      "composite_score": 90.877,
+      "avg_metrics": {
+        "sharpe": 1.521,
+        "total_return": 34.91,
+        "max_drawdown": -7.96,
+        "calmar": 3.314,
+        "crash_avoidance": 2.777,
+        "win_rate": 43.3,
+        "annual_return": 23.35
+      }
+    },
+    {
+      "rank": 5,
+      "name": "自适应混合_v2_f2",
+      "composite_score": 90.873,
+      "avg_metrics": {
+        "sharpe": 1.531,
+        "total_return": 33.86,
+        "max_drawdown": -8.23,
+        "calmar": 3.431,
+        "crash_avoidance": 2.747,
+        "win_rate": 43.2,
+        "annual_return": 23.56
+      }
+    },
+    {
+      "rank": 6,
+      "name": "自适应混合_v2_f5",
+      "composite_score": 90.629,
+      "avg_metrics": {
+        "sharpe": 1.536,
+        "total_return": 36.79,
+        "max_drawdown": -8.8,
+        "calmar": 3.414,
+        "crash_avoidance": 2.638,
+        "win_rate": 43.7,
+        "annual_return": 25.63
+      }
+    },
+    {
+      "rank": 7,
+      "name": "自适应混合_f1",
+      "composite_score": 90.1755,
+      "avg_metrics": {
+        "sharpe": 1.539,
+        "total_return": 39.88,
+        "max_drawdown": -9.54,
+        "calmar": 3.299,
+        "crash_avoidance": 2.526,
+        "win_rate": 43.9,
+        "annual_return": 27.53
+      }
+    },
+    {
+      "rank": 8,
+      "name": "自适应混合_v2_f3",
+      "composite_score": 90.161,
+      "avg_metrics": {
+        "sharpe": 1.527,
+        "total_return": 37.27,
+        "max_drawdown": -9.12,
+        "calmar": 3.286,
+        "crash_avoidance": 2.622,
+        "win_rate": 43.8,
+        "annual_return": 25.92
+      }
+    },
+    {
+      "rank": 9,
+      "name": "自适应混合_v2_f1",
+      "composite_score": 89.762,
+      "avg_metrics": {
+        "sharpe": 1.507,
+        "total_return": 34.21,
+        "max_drawdown": -8.52,
+        "calmar": 3.328,
+        "crash_avoidance": 2.712,
+        "win_rate": 43.2,
+        "annual_return": 23.73
+      }
+    },
+    {
+      "rank": 10,
+      "name": "自适应混合_v2",
+      "composite_score": 89.077,
+      "avg_metrics": {
+        "sharpe": 1.5,
+        "total_return": 35.46,
+        "max_drawdown": -9.07,
+        "calmar": 3.263,
+        "crash_avoidance": 2.638,
+        "win_rate": 43.5,
+        "annual_return": 24.72
+      }
+    }
+  ],
+  "cross_validation": {
+    "原始策略": {
+      "avg_sharpe": 1.198,
+      "std_sharpe": 0.009,
+      "avg_return": 37.24,
+      "avg_drawdown": -11.97,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 1.208142857142857,
+          "total_return": 38.818571428571424,
+          "max_drawdown": -13.328571428571431,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 1.1872857142857143,
+          "total_return": 37.564285714285724,
+          "max_drawdown": -11.8,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 1.1974285714285713,
+          "total_return": 35.33571428571428,
+          "max_drawdown": -10.792857142857143,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    },
+    "宏观防守": {
+      "avg_sharpe": -0.706,
+      "std_sharpe": 0.937,
+      "avg_return": 1.22,
+      "avg_drawdown": -0.5,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 0.18142857142857144,
+          "total_return": 2.082857142857143,
+          "max_drawdown": -0.8957142857142857,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": -2.0012857142857143,
+          "total_return": -0.04285714285714286,
+          "max_drawdown": -0.045714285714285714,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": -0.29742857142857143,
+          "total_return": 1.614285714285714,
+          "max_drawdown": -0.5700000000000001,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "高"
+    },
+    "事件激进": {
+      "avg_sharpe": 0.99,
+      "std_sharpe": 0.053,
+      "avg_return": 40.55,
+      "avg_drawdown": -17.75,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 1.0271428571428571,
+          "total_return": 38.17571428571428,
+          "max_drawdown": -17.564285714285717,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 1.0288571428571427,
+          "total_return": 47.628571428571426,
+          "max_drawdown": -17.36714285714286,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 0.9152857142857143,
+          "total_return": 35.83714285714286,
+          "max_drawdown": -18.307142857142857,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    },
+    "自适应混合": {
+      "avg_sharpe": 1.479,
+      "std_sharpe": 0.056,
+      "avg_return": 38.82,
+      "avg_drawdown": -10.19,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 1.5408571428571431,
+          "total_return": 41.65857142857143,
+          "max_drawdown": -11.229999999999999,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 1.4055714285714285,
+          "total_return": 34.027142857142856,
+          "max_drawdown": -9.674285714285714,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 1.4897142857142855,
+          "total_return": 40.75999999999999,
+          "max_drawdown": -9.65857142857143,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    },
+    "趋势猎手": {
+      "avg_sharpe": 0.932,
+      "std_sharpe": 0.117,
+      "avg_return": 33.2,
+      "avg_drawdown": -16.56,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 1.016142857142857,
+          "total_return": 33.51857142857143,
+          "max_drawdown": -16.87142857142857,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 1.014,
+          "total_return": 39.434285714285714,
+          "max_drawdown": -15.821428571428571,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 0.766,
+          "total_return": 26.63285714285714,
+          "max_drawdown": -16.974285714285717,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    },
+    "均值回归大师": {
+      "avg_sharpe": 0.763,
+      "std_sharpe": 0.147,
+      "avg_return": 16.44,
+      "avg_drawdown": -7.87,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 0.5662857142857142,
+          "total_return": 15.735714285714284,
+          "max_drawdown": -5.0200000000000005,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 0.92,
+          "total_return": 18.572857142857142,
+          "max_drawdown": -10.748571428571427,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 0.8025714285714285,
+          "total_return": 15.004285714285714,
+          "max_drawdown": -7.85,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    },
+    "宏观防线": {
+      "avg_sharpe": -0.535,
+      "std_sharpe": 0.493,
+      "avg_return": 0.03,
+      "avg_drawdown": -0.25,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": -1.1895714285714285,
+          "total_return": 0.05285714285714286,
+          "max_drawdown": -0.5971428571428571,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 0.0,
+          "total_return": 0.0,
+          "max_drawdown": 0.0,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": -0.41585714285714287,
+          "total_return": 0.03,
+          "max_drawdown": -0.15714285714285717,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "中"
+    },
+    "多维共振策略": {
+      "avg_sharpe": 0.799,
+      "std_sharpe": 0.041,
+      "avg_return": 26.67,
+      "avg_drawdown": -13.75,
+      "folds": [
+        {
+          "fold": 1,
+          "sharpe": 0.749,
+          "total_return": 22.142857142857142,
+          "max_drawdown": -11.59,
+          "n_test": 7
+        },
+        {
+          "fold": 2,
+          "sharpe": 0.8491428571428573,
+          "total_return": 30.464285714285715,
+          "max_drawdown": -15.521428571428572,
+          "n_test": 7
+        },
+        {
+          "fold": 3,
+          "sharpe": 0.7981428571428572,
+          "total_return": 27.392857142857142,
+          "max_drawdown": -14.152857142857142,
+          "n_test": 7
+        }
+      ],
+      "overfit_risk": "低"
+    }
+  },
+  "sector_analysis": {
+    "原始策略": {
+      "黄金": {
+        "sharpe": 1.458,
+        "total_return": 45.73,
+        "max_drawdown": -14.39,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 1.548,
+        "total_return": 49.34,
+        "max_drawdown": -10.94,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.546,
+        "total_return": 15.39,
+        "max_drawdown": -11.84,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.732,
+        "total_return": 17.34,
+        "max_drawdown": -12.56,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.959,
+        "total_return": 30.38,
+        "max_drawdown": -10.34,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.542,
+        "total_return": 48.51,
+        "max_drawdown": -12.39,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 1.316,
+        "total_return": 35.72,
+        "max_drawdown": -10.09,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.675,
+        "total_return": 58.46,
+        "max_drawdown": -13.14,
+        "n_funds": 3
+      }
+    },
+    "宏观防守": {
+      "黄金": {
+        "sharpe": 0.594,
+        "total_return": 5.55,
+        "max_drawdown": -2.58,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": -4.67,
+        "total_return": -0.1,
+        "max_drawdown": -0.11,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": -0.67,
+        "total_return": 2.24,
+        "max_drawdown": -0.88,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": -0.627,
+        "total_return": 2.38,
+        "max_drawdown": -0.38,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 3
+      }
+    },
+    "事件激进": {
+      "黄金": {
+        "sharpe": 1.225,
+        "total_return": 43.8,
+        "max_drawdown": -19.5,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 1.148,
+        "total_return": 44.82,
+        "max_drawdown": -16.74,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.14,
+        "total_return": 5.84,
+        "max_drawdown": -18.12,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.68,
+        "total_return": 17.13,
+        "max_drawdown": -15.84,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 1.047,
+        "total_return": 41.92,
+        "max_drawdown": -16.53,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.368,
+        "total_return": 59.51,
+        "max_drawdown": -17.34,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 0.931,
+        "total_return": 34.15,
+        "max_drawdown": -19.24,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.42,
+        "total_return": 74.55,
+        "max_drawdown": -18.46,
+        "n_funds": 3
+      }
+    },
+    "自适应混合": {
+      "黄金": {
+        "sharpe": 1.556,
+        "total_return": 50.39,
+        "max_drawdown": -14.11,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 2.033,
+        "total_return": 43.16,
+        "max_drawdown": -6.22,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.654,
+        "total_return": 17.13,
+        "max_drawdown": -11.17,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 1.521,
+        "total_return": 26.58,
+        "max_drawdown": -8.3,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 1.422,
+        "total_return": 41.35,
+        "max_drawdown": -8.2,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.452,
+        "total_return": 46.52,
+        "max_drawdown": -15.06,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 1.714,
+        "total_return": 49.1,
+        "max_drawdown": -9.5,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.764,
+        "total_return": 38.81,
+        "max_drawdown": -9.05,
+        "n_funds": 3
+      }
+    },
+    "趋势猎手": {
+      "黄金": {
+        "sharpe": 1.225,
+        "total_return": 40.93,
+        "max_drawdown": -19.78,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 1.18,
+        "total_return": 42.64,
+        "max_drawdown": -15.67,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.252,
+        "total_return": 8.89,
+        "max_drawdown": -13.95,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.812,
+        "total_return": 16.49,
+        "max_drawdown": -14.28,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.754,
+        "total_return": 26.55,
+        "max_drawdown": -12.87,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.112,
+        "total_return": 41.66,
+        "max_drawdown": -18.32,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 0.751,
+        "total_return": 24.88,
+        "max_drawdown": -19.98,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.472,
+        "total_return": 63.38,
+        "max_drawdown": -19.49,
+        "n_funds": 3
+      }
+    },
+    "均值回归大师": {
+      "黄金": {
+        "sharpe": 0.146,
+        "total_return": 3.92,
+        "max_drawdown": -3.54,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 0.806,
+        "total_return": 15.48,
+        "max_drawdown": -5.9,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.401,
+        "total_return": 11.23,
+        "max_drawdown": -17.17,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": -0.256,
+        "total_return": 13.55,
+        "max_drawdown": -4.1,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.952,
+        "total_return": 19.84,
+        "max_drawdown": -10.14,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.452,
+        "total_return": 20.3,
+        "max_drawdown": -4.56,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 1.44,
+        "total_return": 26.48,
+        "max_drawdown": -7.62,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.23,
+        "total_return": 22.92,
+        "max_drawdown": -6.08,
+        "n_funds": 3
+      }
+    },
+    "宏观防线": {
+      "黄金": {
+        "sharpe": -2.216,
+        "total_return": 0.44,
+        "max_drawdown": -1.33,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": -2.295,
+        "total_return": -0.36,
+        "max_drawdown": -0.64,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 0.0,
+        "total_return": 0.0,
+        "max_drawdown": 0.0,
+        "n_funds": 3
+      }
+    },
+    "多维共振策略": {
+      "黄金": {
+        "sharpe": 1.327,
+        "total_return": 30.84,
+        "max_drawdown": -9.31,
+        "n_funds": 3
+      },
+      "AI/机器人": {
+        "sharpe": 1.12,
+        "total_return": 42.24,
+        "max_drawdown": -15.04,
+        "n_funds": 2
+      },
+      "医药/生物": {
+        "sharpe": 0.047,
+        "total_return": 3.49,
+        "max_drawdown": -17.15,
+        "n_funds": 3
+      },
+      "半导体/芯片": {
+        "sharpe": 0.203,
+        "total_return": 14.85,
+        "max_drawdown": -10.79,
+        "n_funds": 2
+      },
+      "新能源/光伏": {
+        "sharpe": 0.495,
+        "total_return": 17.07,
+        "max_drawdown": -18.09,
+        "n_funds": 4
+      },
+      "有色/稀土": {
+        "sharpe": 1.136,
+        "total_return": 37.6,
+        "max_drawdown": -9.64,
+        "n_funds": 2
+      },
+      "消费/传媒": {
+        "sharpe": 0.757,
+        "total_return": 26.37,
+        "max_drawdown": -15.4,
+        "n_funds": 2
+      },
+      "混合/主题": {
+        "sharpe": 1.412,
+        "total_return": 48.87,
+        "max_drawdown": -11.79,
+        "n_funds": 3
+      }
+    }
+  },
+  "decision_model": {
+    "均衡型": {
+      "avg_sharpe": 5.815,
+      "avg_return": 92.61,
+      "avg_drawdown": -1.24,
+      "weights": {
+        "技术": 0.3,
+        "基本面": 0.25,
+        "市场": 0.25,
+        "动量": 0.2
+      }
+    },
+    "技术主导": {
+      "avg_sharpe": 4.336,
+      "avg_return": 49.86,
+      "avg_drawdown": -1.74,
+      "weights": {
+        "技术": 0.5,
+        "基本面": 0.15,
+        "市场": 0.15,
+        "动量": 0.2
+      }
+    },
+    "防御优先": {
+      "avg_sharpe": 6.134,
+      "avg_return": 148.18,
+      "avg_drawdown": -1.4,
+      "weights": {
+        "技术": 0.2,
+        "基本面": 0.2,
+        "市场": 0.4,
+        "动量": 0.2
+      }
+    },
+    "动量追踪": {
+      "avg_sharpe": 5.776,
+      "avg_return": 195.38,
+      "avg_drawdown": -3.34,
+      "weights": {
+        "技术": 0.25,
+        "基本面": 0.1,
+        "市场": 0.15,
+        "动量": 0.5
+      }
+    },
+    "价值回归": {
+      "avg_sharpe": 6.023,
+      "avg_return": 99.96,
+      "avg_drawdown": -1.32,
+      "weights": {
+        "技术": 0.15,
+        "基本面": 0.45,
+        "市场": 0.2,
+        "动量": 0.2
+      }
+    }
+  },
+  "score_weights": {
+    "sharpe": 0.3,
+    "total_return": 0.2,
+    "max_drawdown": 0.15,
+    "calmar": 0.15,
+    "crash_avoidance": 0.1,
+    "win_rate": 0.1
+  }
+}
