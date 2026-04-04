@@ -1439,7 +1439,7 @@ router.get('/funds/:id/swing', async (req: Request, res: Response) => {
 // ============================================================
 // 模型版本配置
 // ============================================================
-type ModelVersionId = 'v6.2' | 'v7.2' | 'v7.3' | 'v7.4' | 'v8.0' | 'v8.1';
+type ModelVersionId = 'v7.3' | 'v8.0' | 'v8.1';
 interface ModelConfig {
   id: ModelVersionId;
   label: string;
@@ -1462,37 +1462,11 @@ interface ModelConfig {
 }
 
 const MODEL_CONFIGS: Record<ModelVersionId, ModelConfig> = {
-  'v6.2': {
-    id: 'v6.2', label: 'v6.2 防御优先', description: '硬阈值拦截, 低回撤, 12因子+五维防御',
-    streakTrending5: 0.35, streakTrending3: 0.87,
-    streakOther5: 0.35, streakOther3: 0.87,
-    atrLimitTrending: 2.5, atrLimitDefault: 2.5,
-    useSigmoid: false, trendModeThreshold: 999, // 不启用趋势模式
-    lossBuyFloor: -30, circuitBreakerMode: 'single',
-    hasDailyBuyLimit: false, trailingDdSell: false, dynamicTPTrendMult: 3,
-  },
-  'v7.2': {
-    id: 'v7.2', label: 'v7.2 进攻型', description: 'sigmoid软化, 趋势加速, 收益最高但回撤较大',
-    streakTrending5: 1.20, streakTrending3: 1.08,
-    streakOther5: 0.55, streakOther3: 0.87,
-    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
-    useSigmoid: true, trendModeThreshold: 15,
-    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
-    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
-  },
+  // v6.2/v7.2/v7.4 已下线（被v8.0/v8.1全面覆盖，5年回测验证）
   'v7.3': {
     id: 'v7.3', label: 'v7.3 均衡冠军', description: '混合架构(sigmoid+硬底线), 卡尔玛3.05最优',
     streakTrending5: 1.20, streakTrending3: 1.08,
     streakOther5: 0.35, streakOther3: 0.80,  // 非趋势恢复v6.2强衰减
-    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
-    useSigmoid: true, trendModeThreshold: 15,
-    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
-    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
-  },
-  'v7.4': {
-    id: 'v7.4', label: 'v7.4 熊市防御', description: '混合架构+熔断状态机+现金底线+地缘主动卖出+避险豁免',
-    streakTrending5: 1.20, streakTrending3: 1.08,
-    streakOther5: 0.35, streakOther3: 0.80,
     atrLimitTrending: 3.5, atrLimitDefault: 2.5,
     useSigmoid: true, trendModeThreshold: 15,
     lossBuyFloor: -15, circuitBreakerMode: 'tiered',
