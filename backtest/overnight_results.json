@@ -1,0 +1,165 @@
+{
+  "iterations": [
+    {
+      "name": "v6.2",
+      "avg_return": 40.47,
+      "avg_sharpe": 0.435,
+      "avg_dd": -21.79,
+      "calmar": 1.86
+    },
+    {
+      "name": "v7.4",
+      "avg_return": 20.0,
+      "avg_sharpe": -0.266,
+      "avg_dd": -11.04,
+      "calmar": 1.81
+    },
+    {
+      "name": "v7.5b",
+      "avg_return": 15.74,
+      "avg_sharpe": -0.144,
+      "avg_dd": -11.58,
+      "calmar": 1.36
+    },
+    {
+      "name": "v7.6a-宽熔断",
+      "avg_return": 17.48,
+      "avg_sharpe": -0.117,
+      "avg_dd": -12.36,
+      "calmar": 1.41
+    },
+    {
+      "name": "v7.6b-强趋势",
+      "avg_return": 15.6,
+      "avg_sharpe": -0.155,
+      "avg_dd": -12.17,
+      "calmar": 1.28
+    },
+    {
+      "name": "v7.6c-短冷却",
+      "avg_return": 19.31,
+      "avg_sharpe": -0.116,
+      "avg_dd": -13.93,
+      "calmar": 1.39
+    },
+    {
+      "name": "v7.6d-混合",
+      "avg_return": 17.42,
+      "avg_sharpe": -0.154,
+      "avg_dd": -13.55,
+      "calmar": 1.29
+    },
+    {
+      "name": "v7.7a-激进趋势",
+      "avg_return": 15.4,
+      "avg_sharpe": -0.155,
+      "avg_dd": -13.22,
+      "calmar": 1.17
+    },
+    {
+      "name": "v7.7b-v6.2回归",
+      "avg_return": 15.15,
+      "avg_sharpe": -0.145,
+      "avg_dd": -12.15,
+      "calmar": 1.25
+    },
+    {
+      "name": "v7.7c-低回撤",
+      "avg_return": 14.29,
+      "avg_sharpe": -0.213,
+      "avg_dd": -9.6,
+      "calmar": 1.49
+    },
+    {
+      "name": "v7.7d-平衡",
+      "avg_return": 15.15,
+      "avg_sharpe": -0.178,
+      "avg_dd": -11.72,
+      "calmar": 1.29
+    },
+    {
+      "name": "v7.8a-极致低回撤",
+      "avg_return": 13.93,
+      "avg_sharpe": -0.269,
+      "avg_dd": -9.02,
+      "calmar": 1.54
+    },
+    {
+      "name": "v7.8b-v6.2+防御",
+      "avg_return": 17.87,
+      "avg_sharpe": -0.132,
+      "avg_dd": -12.16,
+      "calmar": 1.47
+    },
+    {
+      "name": "v7.8c-趋势跟踪",
+      "avg_return": 17.58,
+      "avg_sharpe": -0.145,
+      "avg_dd": -12.89,
+      "calmar": 1.36
+    },
+    {
+      "name": "v7.12_a-随机",
+      "avg_return": 15.07,
+      "avg_sharpe": -0.21,
+      "avg_dd": -10.32,
+      "calmar": 1.46
+    },
+    {
+      "name": "v7.12_b-随机",
+      "avg_return": 16.63,
+      "avg_sharpe": -0.098,
+      "avg_dd": -12.68,
+      "calmar": 1.31
+    },
+    {
+      "name": "v7.12_c-随机",
+      "avg_return": 14.08,
+      "avg_sharpe": -0.2,
+      "avg_dd": -10.64,
+      "calmar": 1.32
+    },
+    {
+      "name": "v7.12_d-随机",
+      "avg_return": 13.19,
+      "avg_sharpe": -0.247,
+      "avg_dd": -9.99,
+      "calmar": 1.32
+    },
+    {
+      "name": "v7.13_a-随机",
+      "avg_return": 15.74,
+      "avg_sharpe": -0.123,
+      "avg_dd": -12.27,
+      "calmar": 1.28
+    },
+    {
+      "name": "v7.13_b-随机",
+      "avg_return": 13.41,
+      "avg_sharpe": -0.201,
+      "avg_dd": -10.01,
+      "calmar": 1.34
+    },
+    {
+      "name": "v7.13_c-随机",
+      "avg_return": 14.76,
+      "avg_sharpe": -0.137,
+      "avg_dd": -11.6,
+      "calmar": 1.27
+    },
+    {
+      "name": "v7.13_d-随机",
+      "avg_return": 15.57,
+      "avg_sharpe": -0.184,
+      "avg_dd": -10.76,
+      "calmar": 1.45
+    }
+  ],
+  "best": "v7.12_b-随机",
+  "target": {
+    "sharpe": 0.435,
+    "return": 40.47,
+    "dd": -21.79
+  },
+  "timestamp": "2026-04-04T03:07:21.093730"
+}
