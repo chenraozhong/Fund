@@ -1439,7 +1439,7 @@ router.get('/funds/:id/swing', async (req: Request, res: Response) => {
 // ============================================================
 // 模型版本配置
 // ============================================================
-type ModelVersionId = 'v6.2' | 'v7.2' | 'v7.3' | 'v7.4';
+type ModelVersionId = 'v6.2' | 'v7.2' | 'v7.3' | 'v7.4' | 'v8.0';
 interface ModelConfig {
   id: ModelVersionId;
   label: string;
@@ -1498,9 +1498,19 @@ const MODEL_CONFIGS: Record<ModelVersionId, ModelConfig> = {
     lossBuyFloor: -15, circuitBreakerMode: 'tiered',
     hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 5,
   },
+  'v8.0': {
+    id: 'v8.0', label: 'v8.0 非对称策略', description: '5年回测冠军: v7.3买入(趋势追踪)+v6.2卖出(快止损), 夏普0.441',
+    // 买入层: v7.3参数（趋势加速，捕捉牛市）
+    streakTrending5: 1.20, streakTrending3: 1.08,
+    streakOther5: 0.35, streakOther3: 0.80,
+    atrLimitTrending: 3.5, atrLimitDefault: 2.5,
+    useSigmoid: true, trendModeThreshold: 15,
+    lossBuyFloor: -15, circuitBreakerMode: 'tiered',
+    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 3, // 止盈用v6.2的3倍ATR（更快止盈）
+  },
 };
 
-const DEFAULT_MODEL: ModelVersionId = 'v7.4';
+const DEFAULT_MODEL: ModelVersionId = 'v8.0';
 
 // 获取可用模型列表（供前端）
 function getAvailableModels() {
@@ -1740,7 +1750,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
 
     // [v7.4 盲区1修复] 熔断状态机有记忆: 曾触发过熔断→需连续恢复才解锁
     // 防止假底反弹反复解锁买入
-    if (cbLevel === 'none' && modelCfg.id === 'v7.4') {
+    if (cbLevel === 'none' && modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0') {
       const cbHistory = getCircuitBreakerHistory();
       if (cbHistory.lastTriggeredDate) {
         const daysSinceCB = Math.round((Date.now() - new Date(cbHistory.lastTriggeredDate).getTime()) / 86400000);
@@ -1764,7 +1774,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     dailyBuyRemaining = Math.max(0, dailyBuyLimit - todayBuyTotal);
     // [v7.4 盲区2修复] 现金占比下限: 已投资成本超过估算总资金80%时限制买入
     // 用总成本作为已投入资金的代理指标
-    if (modelCfg.id === 'v7.4') {
+    if (modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0') {
       const totalInvested = getPortfolioCash();
       // 总投入>0时, 如果当前基金成本占总投入过高, 限制追加
       if (totalInvested > 0 && totalCost > totalInvested * 0.15) {
@@ -1834,7 +1844,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
       // [v7.4 盲区4修复] 避险资产(黄金)止盈豁免: 危机中不卖避险仓位
       const isHedge = isHedgeAsset(fund.name);
       const geoFear = geoRisk && geoRisk.riskScore <= -30;
-      if (isHedge && geoFear && modelCfg.id === 'v7.4') {
+      if (isHedge && geoFear && (modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0' || modelCfg.id === 'v8.0')) {
         // 黄金+地缘恐慌 → 延迟止盈, 仅卖30%锁定部分利润
         action = 'sell';
         const ratio = 0.3 * sellCaution;
@@ -2154,7 +2164,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   }
 
   // [v7.4 盲区5] 赎回时滞提醒(forecast已计算)
-  if (action === 'sell' && opShares > 0 && modelCfg.id === 'v7.4') {
+  if (action === 'sell' && opShares > 0 && modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0') {
     const estimatedDays = fund.code && /ETF|联接/.test(fund.name) ? 'T+1~T+2' : 'T+2~T+4';
     if (forecast.direction === 'down' && Math.abs(forecast.predictedChangePct) > 0.5) {
       reasoning.push(`[v7.4赎回时滞] 预计${estimatedDays}到账，期间可能再跌${(Math.abs(forecast.predictedChangePct) * 2).toFixed(1)}%`);
@@ -2203,7 +2213,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[v7地缘] 风险评分${geoRisk.riskScore}→买入缩减至${Math.round(geoReduction*100)}%`);
   }
   // [v7.4 盲区3修复] 地缘极度恐慌→主动卖出(不仅阻止买入)
-  if (modelCfg.id === 'v7.4' && geoRisk && geoRisk.riskScore <= -70
+  if (modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0' && geoRisk && geoRisk.riskScore <= -70
       && action !== 'sell' && swingShares > 0 && !isHedgeAsset(fund.name)) {
     action = 'sell';
     opShares = r4(swingShares * 0.25);
