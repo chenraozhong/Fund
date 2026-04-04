@@ -1480,7 +1480,7 @@ const MODEL_CONFIGS: Record<ModelVersionId, ModelConfig> = {
     atrLimitTrending: 3.5, atrLimitDefault: 2.5,
     useSigmoid: true, trendModeThreshold: 15,
     lossBuyFloor: -15, circuitBreakerMode: 'tiered',
-    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 3,
+    hasDailyBuyLimit: true, trailingDdSell: true, dynamicTPTrendMult: 4,  // 从3提升到4，减少趋势截利
   },
   'v8.1': {
     id: 'v8.1', label: 'v8.1 动量守门员', description: '卡尔玛冠军: v6.2+动量过滤, 回撤最小(-14.4%), 6只基金冠军',
@@ -1489,7 +1489,7 @@ const MODEL_CONFIGS: Record<ModelVersionId, ModelConfig> = {
     streakOther5: 0.35, streakOther3: 0.87,
     atrLimitTrending: 2.5, atrLimitDefault: 2.5,
     useSigmoid: false, trendModeThreshold: 999,
-    lossBuyFloor: -30, circuitBreakerMode: 'single',
+    lossBuyFloor: -30, circuitBreakerMode: 'tiered',  // 恢复tiered熔断(15/20/25%)
     hasDailyBuyLimit: false, trailingDdSell: false, dynamicTPTrendMult: 3,
   },
 };
@@ -2070,7 +2070,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   // 豁免：critical熔断止损 + 高盈利(>20%)止盈 不受冷却限制
   if (action === 'sell' && opShares > 0) {
     const isCriticalSell = cbLevel === 'critical';
-    const isHighProfitSell = profitPct > 20;
+    const isHighProfitSell = (gainPct > 20);  // fix: 用gainPct替代可能未定义的profitPct
     if (!isCriticalSell && !isHighProfitSell) {
       const recentSells = getRecentSellCount(fundId, 5);
       if (recentSells >= 2) {
@@ -2095,24 +2095,50 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[v7.5组合防御] 超60%基金亏损>10%，系统性危机模式，全局暂停买入`);
   }
 
-  // [v8.1] 动量守门员: 基金10日动量为负时禁止买入 + 大盘动量差时缩减买入
-  if (action === 'buy' && opAmount > 0 && modelCfg.id === 'v8.1') {
-    // 基金自身动量检查: 10日回报 < -1% → 不买（不接飞刀）
+  // [v8.1a] FOMC会议周: 买入自动缩减50%（波动加大期间谨慎）
+  if (action === 'buy' && opAmount > 0 && geoRisk && geoRisk.isFomcWeek) {
+    opShares = r4(opShares * 0.5);
+    opAmount = Math.round(opShares * nav);
+    reasoning.push(`[v8.1a宏观] FOMC会议周，买入缩减50%防范波动`);
+  }
+
+  // [v8.1a] VIX高恐慌: 买入大幅缩减
+  if (action === 'buy' && opAmount > 0 && geoRisk && geoRisk.vix && geoRisk.vix.value > 30) {
+    const vixDecay = geoRisk.vix.value > 40 ? 0.2 : 0.4;
+    opShares = r4(opShares * vixDecay);
+    opAmount = Math.round(opShares * nav);
+    reasoning.push(`[v8.1a宏观] VIX=${geoRisk.vix.value.toFixed(0)}高恐慌，买入缩减${Math.round((1-vixDecay)*100)}%`);
+  }
+
+  // [v8.1a] 动量守门员: sigmoid衰减（不再硬禁令）+ V型反转豁免
+  if (action === 'buy' && opAmount > 0 && (modelCfg.id === 'v8.1')) {
     if (navValues.length >= 10) {
       const fundMom10 = ((navValues[navValues.length - 1] / navValues[navValues.length - 10]) - 1) * 100;
       if (fundMom10 < -1.0) {
-        action = 'hold'; opShares = 0; opAmount = 0;
-        reasoning.push(`[v8.1动量] 基金10日动量${fundMom10.toFixed(1)}%<-1%，不接飞刀`);
+        // V型反转检测: 近3日涨幅>2% + MACD柱由负转正 → 豁免动量禁令
+        const recent3d = navValues.length >= 3 ? ((navValues[navValues.length-1] / navValues[navValues.length-4]) - 1) * 100 : 0;
+        const isVReversal = recent3d > 2.0 && technical.macd.histogram > 0;
+        if (isVReversal) {
+          opShares = r4(opShares * 0.5); // V型���转允许半额买入
+          opAmount = Math.round(opShares * nav);
+          reasoning.push(`[v8.1a反转] 10日动量${fundMom10.toFixed(1)}%为负但近3日反弹${recent3d.toFixed(1)}%+MACD转正，半额试探`);
+        } else {
+          // sigmoid衰减: 动量越负衰减越强，但不完全归零
+          const decay = Math.max(0.15, 1 / (1 + Math.exp(-0.8 * (Math.abs(fundMom10) - 3))));
+          const keepRatio = 1 - decay; // mom=-1%→保留约85%, mom=-5%→保留约25%, mom=-8%→保留约15%
+          opShares = r4(opShares * keepRatio);
+          opAmount = Math.round(opShares * nav);
+          reasoning.push(`[v8.1a动量] 10日动量${fundMom10.toFixed(1)}%，信号衰减至${Math.round(keepRatio*100)}%`);
+        }
       }
     }
-    // 大盘动量检查: 上证10日回报 < -2% → 买入缩减70%
-    if (action === 'buy' && market && market.marketIndices) {
+    // 大盘动量检查: 用当日大盘跌幅>1%时才缩减（修复P2: 0.5%过于敏感）
+    if (action === 'buy' && opAmount > 0 && market && market.marketIndices) {
       const shIdx = market.marketIndices.find((idx: any) => idx.name === '上证指数');
-      if (shIdx && shIdx.changePct < -0.5) {
-        // 用当日大盘跌幅近似（无法在决策中获取10日大盘动量，用当日替代）
-        opShares = r4(opShares * 0.3);
+      if (shIdx && shIdx.changePct < -1.0) {
+        opShares = r4(opShares * 0.4);
         opAmount = Math.round(opShares * nav);
-        reasoning.push(`[v8.1大盘] 大盘下跌${shIdx.changePct.toFixed(1)}%，买入缩减70%`);
+        reasoning.push(`[v8.1a大盘] 大盘跌${shIdx.changePct.toFixed(1)}%>1%，买入缩减60%`);
       }
     }
   }

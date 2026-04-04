@@ -201,7 +201,7 @@ export function inferSectorKeyword(name: string): string {
 // 消息面情绪评分：分析新闻标题的利多/利空倾向
 export function scoreNewsSentiment(news: NewsItem[]): { score: number; bullish: string[]; bearish: string[]; neutral: number } {
   const bullKeywords = /上涨|涨停|新高|利好|大涨|反弹|突破|买入|加仓|增持|超预期|回暖|复苏|放量|资金流入|抢筹|布局|机遇|景气|龙头/;
-  const bearKeywords = /下跌|跌停|新低|利空|大跌|暴跌|减持|抛售|清仓|风险|回调|破位|亏损|缩水|资金流出|踩雷|退市|爆雷|下行|承压/;
+  const bearKeywords = /下跌|跌停|新低|利空|大跌|暴跌|减持|抛售|清仓|风险|回调|破位|亏损|缩水|资金流出|踩雷|退市|爆雷|下行|承压|制裁|关税|出口管制|实体清单|禁令|封锁|脱钩|限制出口/;
 
   let bullCount = 0, bearCount = 0;
   const bullish: string[] = [], bearish: string[] = [];
@@ -764,6 +764,8 @@ export interface GeopoliticalRisk {
   dxy: { price: number; changePct: number };                          // 美元指数
   usIndices: { name: string; changePct: number }[];                   // 美股三大指数
   hangSeng: { changePct: number };                                    // 恒生指数
+  vix: { value: number; level: 'low' | 'normal' | 'elevated' | 'high' | 'extreme' };  // VIX恐慌指数
+  isFomcWeek: boolean;                                                // 是否FOMC会议周
   riskScore: number;        // -100(极度恐慌) ~ +100(极度乐观)
   riskLevel: 'extreme_fear' | 'fear' | 'neutral' | 'greed' | 'extreme_greed';
   riskDetail: string;       // 风险说明
@@ -790,6 +792,7 @@ export async function fetchGeopoliticalRisk(): Promise<GeopoliticalRisk> {
     oil: { price: 0, prevClose: 0, changePct: 0 },
     dxy: { price: 0, changePct: 0 },
     usIndices: [], hangSeng: { changePct: 0 },
+    vix: { value: 0, level: 'normal' }, isFomcWeek: false,
     riskScore: 0, riskLevel: 'neutral', riskDetail: '', signals: [],
   };
 
@@ -801,7 +804,7 @@ export async function fetchGeopoliticalRisk(): Promise<GeopoliticalRisk> {
         { headers: { 'Referer': 'https://finance.sina.com.cn' } }
       ).then(r => r.text()).catch(() => ''),
       fetchWithTimeout(
-        'https://hq.sinajs.cn/list=int_nasdaq,int_sp500,int_dji,int_hangseng,DINIW',
+        'https://hq.sinajs.cn/list=int_nasdaq,int_sp500,int_dji,int_hangseng,DINIW,CBOE_VIX',
         { headers: { 'Referer': 'https://finance.sina.com.cn' } }
       ).then(r => r.text()).catch(() => ''),
     ]);
@@ -874,6 +877,30 @@ export async function fetchGeopoliticalRisk(): Promise<GeopoliticalRisk> {
     if (dxyChangePct > 1) { riskScore -= 8; signals.push(`美元走强${dxyChangePct.toFixed(1)}%→新兴市场承压`); }
     else if (dxyChangePct < -1) { riskScore += 5; signals.push(`美元走弱${dxyChangePct.toFixed(1)}%`); }
 
+    // 7. [v8.1a] VIX恐慌指数
+    const vixParts = parseSinaVar(indicesRes, 'CBOE_VIX');
+    const vixValue = parseFloat(vixParts[1]) || 0;
+    let vixLevel: 'low' | 'normal' | 'elevated' | 'high' | 'extreme' = 'normal';
+    if (vixValue > 40) { riskScore -= 30; vixLevel = 'extreme'; signals.push(`VIX=${vixValue.toFixed(0)}极度恐慌`); }
+    else if (vixValue > 30) { riskScore -= 18; vixLevel = 'high'; signals.push(`VIX=${vixValue.toFixed(0)}恐慌`); }
+    else if (vixValue > 25) { riskScore -= 8; vixLevel = 'elevated'; signals.push(`VIX=${vixValue.toFixed(0)}偏高`); }
+    else if (vixValue > 0 && vixValue < 15) { riskScore += 5; vixLevel = 'low'; }
+
+    // 8. [v8.1a] FOMC会议周检测（会议前后波动加大）
+    const FOMC_DATES_2025_2026 = [
+      '2025-01-29','2025-03-19','2025-05-07','2025-06-18',
+      '2025-07-30','2025-09-17','2025-10-29','2025-12-17',
+      '2026-01-28','2026-03-18','2026-05-06','2026-06-17',
+      '2026-07-29','2026-09-16','2026-10-28','2026-12-16',
+    ];
+    const today = new Date().toISOString().slice(0, 10);
+    const todayMs = new Date(today).getTime();
+    const isFomcWeek = FOMC_DATES_2025_2026.some(d => {
+      const diff = Math.abs(todayMs - new Date(d).getTime()) / 86400000;
+      return diff <= 3; // 会议前后3天
+    });
+    if (isFomcWeek) { signals.push('FOMC会议周，波动可能加大'); }
+
     riskScore = Math.max(-100, Math.min(100, riskScore));
 
     const riskLevel: GeopoliticalRisk['riskLevel'] =
@@ -895,6 +922,8 @@ export async function fetchGeopoliticalRisk(): Promise<GeopoliticalRisk> {
       dxy: { price: dxyPrice, changePct: Math.round(dxyChangePct * 100) / 100 },
       usIndices,
       hangSeng: { changePct: Math.round(hsChangePct * 100) / 100 },
+      vix: { value: vixValue, level: vixLevel },
+      isFomcWeek,
       riskScore,
       riskLevel,
       riskDetail: detailParts.join('；'),
