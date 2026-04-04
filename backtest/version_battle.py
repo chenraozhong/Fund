@@ -31,6 +31,7 @@ from strategy_local_v72 import LocalV72Strategy
 from strategy_local_v80 import LocalV80Strategy
 from strategy_local_v73 import LocalV73Strategy
 from strategy_local_v74 import LocalV74Strategy
+from strategy_local_v75 import LocalV75Strategy
 
 # 扩大基金池: 21只基金覆盖8板块
 TEST_FUNDS = [
@@ -78,6 +79,7 @@ def generate_version_html(results: Dict, fund_results: Dict) -> str:
         'v7.2决策模型': '#f39c12',
         'v7.3决策模型': '#f39c12',
         'v7.4决策模型': '#1abc9c',
+        'v7.5a决策模型': '#2ecc71',
         'v8.0决策模型': '#9b59b6',
         '双动量(Antonacci)': '#7f8c8d',
         '自适应均线(Kaufman)': '#95a5a6',
@@ -229,6 +231,7 @@ def main():
         LocalV62Strategy(),
         LocalV73Strategy(),
         LocalV74Strategy(),
+        LocalV75Strategy(),
         DualMomentumStrategy(),
         KaufmanAMAStrategy(),
     ]
