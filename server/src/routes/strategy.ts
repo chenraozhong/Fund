@@ -47,7 +47,7 @@ function getCircuitBreakerHistory(): { lastTriggeredDate: string | null; level: 
 /** 获取地缘风险+市场情绪的组合数据 */
 async function fetchGeoWithSentiment() {
   const [geoRisk, sentiment] = await Promise.all([
-    fetchGeoWithSentiment(),
+    fetchGeopoliticalRisk(),
     fetchMarketSentiment(),
   ]);
   // 将情绪数据挂载到geoRisk上（通过类型扩展传递给computeForecastCore）
