@@ -930,16 +930,17 @@ export default function FundDetail() {
         )
       })()}
 
-      {/* 明日行情预测 */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
-        <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
-            <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900">明日行情预测</h3>
-            <p className="text-xs text-gray-400">多因子模型综合预测 · 仅供参考</p>
-          </div>
+      {/* 技术面参考（弱化展示，默认折叠） */}
+      <details className="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <summary className="p-3 sm:p-5 cursor-pointer select-none">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gray-100 text-gray-400 flex items-center justify-center">
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-500">技术面参考</h3>
+              <p className="text-xs text-gray-400">基于技术指标的信号汇总 · 准确率约65% · 仅供参考不构成投资建议</p>
+            </div>
           {forecastLoading && <span className="text-xs text-gray-400 animate-pulse ml-auto">分析中...</span>}
         </div>
 
@@ -1045,7 +1046,8 @@ export default function FundDetail() {
         ) : !forecastLoading ? (
           <div className="text-sm text-gray-400 py-4 text-center">暂无预测数据</div>
         ) : null}
-      </div>
+        </div>
+      </details>
 
       {/* 实时净值快速决策 */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">

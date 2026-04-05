@@ -213,20 +213,16 @@ export default function Dashboard() {
                     <div className={`text-xs font-medium ${gainPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>{gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%</div>
                   </div>
 
-                  {/* 右：预测 */}
+                  {/* 右：技术面参考（弱化显示） */}
                   <div className="shrink-0 w-16 sm:w-20 text-center">
                     {fc ? (
-                      <span className={`inline-flex items-center gap-0.5 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-lg text-[11px] sm:text-xs font-bold ${
-                        fc.direction === 'up' ? 'bg-red-50 text-red-600' :
-                        fc.direction === 'down' ? 'bg-green-50 text-green-600' :
-                        'bg-gray-100 text-gray-500'
-                      }`}>
+                      <span className="text-[10px] sm:text-[11px] text-gray-400 font-mono">
                         {fc.direction === 'up' ? '↑' : fc.direction === 'down' ? '↓' : '→'}
                         {fc.predictedChangePct >= 0 ? '+' : ''}{fc.predictedChangePct.toFixed(2)}%
                       </span>
                     ) : forecastsLoading ? (
-                      <span className="text-[11px] sm:text-xs text-gray-400 animate-pulse">预测中</span>
-                    ) : <span className="text-[11px] sm:text-xs text-gray-400">-</span>}
+                      <span className="text-[10px] text-gray-300 animate-pulse">...</span>
+                    ) : null}
                   </div>
 
                   {/* 右：决策 */}
