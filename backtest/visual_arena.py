@@ -721,7 +721,7 @@ class LocalV62Strategy(Strategy):
 def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
                           market_df: pd.DataFrame = None,
                           initial_capital: float = 100000) -> Dict:
-    """增强回测: 返回每日净值曲线+持仓+交易记录"""
+    """增强回测: FIFO持仓跟踪 + 赎回费计算 + 每日净值曲线"""
     n = len(df)
     if n < 30:
         return {'nav_curve': [], 'trades': [], 'daily_returns': pd.Series(dtype=float)}
@@ -731,6 +731,10 @@ def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
     nav_curve = []   # 每日组合净值
     trades = []      # 交易记录
     signals_history = []
+
+    # FIFO持仓队列: [(buy_day, shares)] 用于计算赎回费
+    holding_lots = []  # 每笔买入的(日期索引, 剩余份额)
+    total_fees = 0.0   # 累计赎回费
 
     for i in range(n):
         current_nav = df['nav'].iloc[i]
@@ -748,24 +752,51 @@ def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
                 buy_shares = buy_amount / current_nav
                 position += buy_shares
                 cash -= buy_amount
+                holding_lots.append([i, buy_shares])  # 记录买入日和份额
                 trades.append({
                     'day': i, 'date': str(df['date'].iloc[i])[:10],
                     'action': 'buy', 'nav': current_nav,
                     'shares': buy_shares, 'amount': buy_amount,
-                    'signal': signal
+                    'signal': signal, 'fee': 0
                 })
             elif signal < -0.3 and position > 0:
-                # 卖出: 信号越强卖越多
+                # 卖出: FIFO扣赎回费
                 sell_pct = min(abs(signal) * 0.5, 0.4)
                 sell_shares = position * sell_pct
-                sell_amount = sell_shares * current_nav
+                sell_amount_gross = sell_shares * current_nav
+
+                # FIFO赎回费计算: <7天1.5%, >=7天0%
+                remaining_to_sell = sell_shares
+                fee = 0.0
+                new_lots = []
+                for lot in holding_lots:
+                    if remaining_to_sell <= 0:
+                        new_lots.append(lot)
+                        continue
+                    lot_day, lot_shares = lot
+                    hold_days = i - lot_day
+                    sold_from_lot = min(remaining_to_sell, lot_shares)
+                    remaining_to_sell -= sold_from_lot
+
+                    # 赎回费: <7天1.5%, >=7天0%
+                    if hold_days < 7:
+                        fee += sold_from_lot * current_nav * 0.015
+
+                    leftover = lot_shares - sold_from_lot
+                    if leftover > 0.001:
+                        new_lots.append([lot_day, leftover])
+
+                holding_lots = new_lots
+                total_fees += fee
+                sell_amount_net = sell_amount_gross - fee
+
                 position -= sell_shares
-                cash += sell_amount
+                cash += sell_amount_net
                 trades.append({
                     'day': i, 'date': str(df['date'].iloc[i])[:10],
                     'action': 'sell', 'nav': current_nav,
-                    'shares': sell_shares, 'amount': sell_amount,
-                    'signal': signal
+                    'shares': sell_shares, 'amount': sell_amount_net,
+                    'signal': signal, 'fee': round(fee, 2)
                 })
         else:
             signals_history.append(0)
@@ -783,6 +814,7 @@ def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
         'daily_returns': daily_returns,
         'signals': signals_history,
         'final_value': nav_curve[-1] if nav_curve else 1.0,
+        'total_fees': round(total_fees, 2),
     }
 
 
