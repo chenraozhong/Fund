@@ -3157,16 +3157,18 @@ function computeForecastCore(
   else if (predictedChangePct < -0.15) direction = 'down';
   else direction = 'sideways';
 
-  // 置信度
+  // 置信度（修正：因子增加到13个后降低单因子权重，防止普遍高置信度）
   const allFactors = [trendFactor, reversionFactor, rsiFactor, macdFactor, bbFactor, newsFactor, marketFactor, srFactor, crossTfFactor, gapFactor, capitalFlowFactor, geoRiskFactor, sentimentFactor];
+  const totalSignificant = allFactors.filter(f => Math.abs(f) > 0.02).length;
   const sameDirection = allFactors.filter(f => (f > 0) === (predictedChangePct > 0) && Math.abs(f) > 0.02).length;
-  let confidence = 30 + sameDirection * 7 + Math.abs(predictedChangePct) * 5;
-  if (Math.abs(crossTfFactor) > 0.1) confidence += 8;
-  if ((srFactor > 0) === (predictedChangePct > 0) && Math.abs(srFactor) > 0.05) confidence += 5;
-  if ((capitalFlowFactor > 0) === (predictedChangePct > 0) && Math.abs(capitalFlowFactor) > 0.05) confidence += 6;
-  // 情绪因子与预测同向时增强置信度（情绪+技术共振 = 更可信）
-  if ((sentimentFactor > 0) === (predictedChangePct > 0) && Math.abs(sentimentFactor) > 0.05) confidence += 8;
-  confidence = Math.min(90, Math.max(20, confidence));
+  // 用同向比例而非绝对数量: 8/13同向=62%置信度基础, 13/13=100%
+  const agreementRatio = totalSignificant > 0 ? sameDirection / totalSignificant : 0.5;
+  let confidence = 20 + agreementRatio * 40 + Math.abs(predictedChangePct) * 4;
+  // 强共振加分（但幅度更小）
+  if (Math.abs(crossTfFactor) > 0.1) confidence += 5;
+  if ((capitalFlowFactor > 0) === (predictedChangePct > 0) && Math.abs(capitalFlowFactor) > 0.05) confidence += 4;
+  if ((sentimentFactor > 0) === (predictedChangePct > 0) && Math.abs(sentimentFactor) > 0.05) confidence += 4;
+  confidence = Math.min(85, Math.max(20, confidence));  // 上限从90降到85
 
   return {
     predictedChangePct: Math.round(predictedChangePct * 100) / 100,
