@@ -3959,7 +3959,143 @@ router.get('/forecasts/fund/:id', async (req: Request, res: Response) => {
 
 // ============================================================
 // ============================================================
-// 波段交易建议（活仓7-30天波段，基于波动率+网格+持有期约束）
+// 组合配置建议（基于历史数据自动分析基金分级+配置比例）
+// ============================================================
+
+router.get('/portfolio-advice', async (_req: Request, res: Response) => {
+  try {
+    // 获取所有持仓基金
+    const funds = db.prepare(`
+      SELECT f.id, f.name, f.code, f.color, f.market_nav, f.base_position_pct,
+        COALESCE(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN t.type='sell' THEN t.shares ELSE 0 END),0) as holding_shares,
+        COALESCE(SUM(CASE WHEN t.type='buy' THEN t.shares*t.price ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN t.type='sell' THEN t.shares*t.price ELSE 0 END),0) +
+        COALESCE(SUM(CASE WHEN t.type='dividend' THEN t.price ELSE 0 END),0) as total_cost
+      FROM funds f LEFT JOIN transactions t ON t.fund_id = f.id
+      WHERE f.deleted_at IS NULL GROUP BY f.id HAVING holding_shares > 0
+    `).all() as any[];
+
+    const results: any[] = [];
+
+    for (const fund of funds) {
+      const nav = fund.market_nav || 0;
+      const holdingShares = fund.holding_shares;
+      const marketValue = nav > 0 ? holdingShares * nav : fund.total_cost;
+      const costNav = holdingShares > 0 ? fund.total_cost / holdingShares : 0;
+      const gainPct = costNav > 0 ? ((nav - costNav) / costNav) * 100 : 0;
+
+      // 获取历史净值计算波动率和趋势
+      let vol20 = 0, trend20 = 0, avgDailyMove = 0;
+      if (fund.code) {
+        try {
+          const navHistory = await fetchNavHistory(fund.code, 60);
+          const navValues = navHistory.map((p: any) => p.nav);
+          if (navValues.length >= 20) {
+            const ret20 = navValues.slice(-21).map((v: number, i: number, a: number[]) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100).slice(1);
+            vol20 = Math.sqrt(ret20.reduce((s: number, r: number) => s + r * r, 0) / ret20.length) * Math.sqrt(250);
+            trend20 = ((navValues[navValues.length-1] / navValues[navValues.length-21]) - 1) * 100;
+            avgDailyMove = ret20.reduce((s: number, r: number) => s + Math.abs(r), 0) / ret20.length;
+          }
+        } catch { /* ignore */ }
+      }
+
+      // 基金分级
+      const isGold = isHedgeAsset(fund.name);
+      let tier: 'core' | 'swing' | 'reduce';
+      let strategy: string;
+      let reason: string;
+      let targetAlloc: number;  // 建议配置比例%
+
+      if (isGold) {
+        tier = 'core';
+        strategy = '买入持有';
+        reason = '黄金类避险资产，7年回测买入持有年化8%+，不频繁交易最优';
+        targetAlloc = 15;
+      } else if (vol20 > 25 && trend20 > 3) {
+        // 高波动+上涨趋势 → 用v8.0进攻
+        tier = 'core';
+        strategy = 'v8.0非对称';
+        reason = `高波动(${vol20.toFixed(0)}%)+上涨趋势(${trend20.toFixed(1)}%)，v8.0趋势追踪最优`;
+        targetAlloc = 12;
+      } else if (vol20 > 20 && gainPct > 5) {
+        // 中高波动+盈利 → 底仓+波段
+        tier = 'swing';
+        strategy = 'v8.0非对称+波段';
+        reason = `中高波动(${vol20.toFixed(0)}%)适合波段，底仓v8.0+活仓做差价`;
+        targetAlloc = 8;
+      } else if (vol20 > 15 && trend20 > -3) {
+        // 中波动+不跌 → v8.1防御
+        tier = 'swing';
+        strategy = 'v8.1动量守门员';
+        reason = `中波动(${vol20.toFixed(0)}%)，v8.1防御型持有+小仓位波段`;
+        targetAlloc = 6;
+      } else if (trend20 < -5 || gainPct < -15) {
+        // 下跌趋势或深度亏损 → 考虑减持
+        tier = 'reduce';
+        strategy = '减仓观望';
+        reason = trend20 < -5
+          ? `近20日跌${trend20.toFixed(1)}%，趋势向下，建议减仓等企稳`
+          : `亏损${gainPct.toFixed(1)}%较深，建议止损部分仓位`;
+        targetAlloc = 3;
+      } else {
+        tier = 'swing';
+        strategy = 'v8.1动量守门员';
+        reason = `波动率一般(${vol20.toFixed(0)}%)，v8.1防御型持有`;
+        targetAlloc = 5;
+      }
+
+      results.push({
+        id: fund.id, name: fund.name, code: fund.code, color: fund.color,
+        tier, strategy, reason, targetAlloc,
+        holdingShares: r4(holdingShares), costNav: r4(costNav), marketValue: Math.round(marketValue),
+        gainPct: Math.round(gainPct * 100) / 100,
+        volatility: Math.round(vol20 * 10) / 10,
+        trend20: Math.round(trend20 * 10) / 10,
+        avgDailyMove: Math.round(avgDailyMove * 100) / 100,
+        basePct: fund.base_position_pct ?? 70,
+      });
+    }
+
+    // 汇总
+    const totalValue = results.reduce((s: number, r: any) => s + r.marketValue, 0);
+    const core = results.filter((r: any) => r.tier === 'core');
+    const swing = results.filter((r: any) => r.tier === 'swing');
+    const reduce = results.filter((r: any) => r.tier === 'reduce');
+
+    const coreValue = core.reduce((s: number, r: any) => s + r.marketValue, 0);
+    const swingValue = swing.reduce((s: number, r: any) => s + r.marketValue, 0);
+    const reduceValue = reduce.reduce((s: number, r: any) => s + r.marketValue, 0);
+
+    // 预期年化收益估算
+    const coreAnnEst = 8.5;  // 核心底仓预期年化
+    const swingAnnEst = 5.0 + 2.5;  // 波段底仓+活仓波段
+    const reduceAnnEst = 0;
+    const totalAnn = totalValue > 0
+      ? (coreValue * coreAnnEst + swingValue * swingAnnEst + reduceValue * reduceAnnEst) / totalValue
+      : 0;
+
+    res.json({
+      funds: results.sort((a: any, b: any) => {
+        const tierOrder: Record<string, number> = { core: 0, swing: 1, reduce: 2 };
+        return (tierOrder[a.tier] || 9) - (tierOrder[b.tier] || 9) || b.marketValue - a.marketValue;
+      }),
+      summary: {
+        totalValue, totalFunds: results.length,
+        core: { count: core.length, value: coreValue, pct: totalValue > 0 ? Math.round(coreValue / totalValue * 100) : 0 },
+        swing: { count: swing.length, value: swingValue, pct: totalValue > 0 ? Math.round(swingValue / totalValue * 100) : 0 },
+        reduce: { count: reduce.length, value: reduceValue, pct: totalValue > 0 ? Math.round(reduceValue / totalValue * 100) : 0 },
+        estimatedAnnualReturn: Math.round(totalAnn * 10) / 10,
+        targetAlloc: { core: 70, swing: 20, reduce: 10 },
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '组合分析失败: ' + err.message });
+  }
+});
+
+// ============================================================
+// 波段交易建议（活仓7-30天波段，基于波动率+网格+持有期���束）
 // ============================================================
 
 router.get('/funds/:id/band-trade', async (req: Request, res: Response) => {

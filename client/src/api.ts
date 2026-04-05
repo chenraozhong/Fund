@@ -525,6 +525,7 @@ export const api = {
   }>(`/strategy/funds/${id}/swing?nav=${nav}`),
 
   getBandTrade: (id: number, nav: number) => request<any>(`/strategy/funds/${id}/band-trade?nav=${nav}`),
+  getPortfolioAdvice: () => request<any>('/strategy/portfolio-advice'),
 
   importPreview: (text: string) =>
     request<{ funds: ImportPreview[] }>('/import/preview', { method: 'POST', body: JSON.stringify({ text }) }),

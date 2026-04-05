@@ -8,6 +8,7 @@ import FundDetail from './pages/FundDetail'
 import Backups from './pages/Backups'
 import Import from './pages/Import'
 import Sync from './pages/Sync'
+import Portfolio from './pages/Portfolio'
 
 export default function App() {
   const Router = import.meta.env.VITE_HARMONY ? HashRouter : BrowserRouter
@@ -23,6 +24,7 @@ export default function App() {
           <Route path="/funds/:id" element={<FundDetail />} />
           <Route path="/backups" element={<Backups />} />
           <Route path="/import" element={<Import />} />
+          <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/sync" element={<Sync />} />
         </Route>
       </Routes>

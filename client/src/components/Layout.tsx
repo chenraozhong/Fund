@@ -6,6 +6,7 @@ const links = [
   { to: '/performance', label: '业绩走势' },
   { to: '/transactions', label: '交易记录' },
   { to: '/funds', label: '基金管理' },
+  { to: '/portfolio', label: '组合配置' },
   { to: '/import', label: '批量导入' },
   { to: '/backups', label: '数据备份' },
   { to: '/sync', label: '数据同步' },
