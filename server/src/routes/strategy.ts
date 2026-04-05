@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import db from '../db';
-import { fetchFundamental, fetchFundHoldings, fetchSectorNews, fetchRedeemFees, getRedeemFeeRate, inferSectorKeyword, scoreNewsSentiment, scoreFundamental, checkSectorExposure, fetchCapitalFlow, fetchWithTimeout, fetchGeopoliticalRisk } from '../datasource';
+import { fetchFundamental, fetchFundHoldings, fetchSectorNews, fetchRedeemFees, getRedeemFeeRate, inferSectorKeyword, scoreNewsSentiment, scoreFundamental, checkSectorExposure, fetchCapitalFlow, fetchWithTimeout, fetchGeopoliticalRisk, fetchMarketSentiment } from '../datasource';
 import type { CapitalFlowData, GeopoliticalRisk } from '../datasource';
 
 const router = Router();
@@ -44,6 +44,17 @@ function getCircuitBreakerHistory(): { lastTriggeredDate: string | null; level: 
   if (!row) return { lastTriggeredDate: null, level: null };
   return { lastTriggeredDate: row.date, level: row.reason?.includes('危急') ? 'critical' : 'review' };
 }
+/** 获取地缘风险+市场情绪的组合数据 */
+async function fetchGeoWithSentiment() {
+  const [geoRisk, sentiment] = await Promise.all([
+    fetchGeoWithSentiment(),
+    fetchMarketSentiment(),
+  ]);
+  // 将情绪数据挂载到geoRisk上（通过类型扩展传递给computeForecastCore）
+  (geoRisk as any)._sentiment = sentiment;
+  return geoRisk;
+}
+
 /** [v7.4] 判断是否为避险资产(黄金类) */
 function isHedgeAsset(fundName: string): boolean {
   return /黄金|gold/i.test(fundName);
@@ -1566,7 +1577,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   // 重仓股数据就绪后并行获取资金流向+地缘风险
   const [capitalFlow, geoRisk] = await Promise.all([
     fetchCapitalFlow(fund.name, (holdings as any)?.holdings),
-    fetchGeopoliticalRisk(),
+    fetchGeoWithSentiment(),
   ]);
 
   const navValues = navHistory.map(p => p.nav);
@@ -2625,7 +2636,7 @@ router.get('/trade-analysis', async (req: Request, res: Response) => {
 
     // 并行获取：地缘风险(1次) + 每只基金的NAV历史和市场数据
     const fundDataCache = new Map<number, { navValues: number[]; tech: TechnicalIndicators; risk: RiskMetrics; marketCtx: SectorInfo | null; forecast: ForecastCoreResult }>();
-    const geoRiskPromise = fetchGeopoliticalRisk();
+    const geoRiskPromise = fetchGeoWithSentiment();
     const fundPromises = Array.from(uniqueFunds.entries()).map(async ([fundId, { code, name }]) => {
       const [navHistory, marketCtx] = await Promise.all([
         fetchNavHistory(code, 60),
@@ -3104,13 +3115,35 @@ function computeForecastCore(
     }
   }
 
+  // [v8.1a] 市场情绪因子（北向资金+涨跌比 → 情绪驱动预测）
+  let sentimentFactor = 0;
+  // 情绪数据通过 geoRisk 旁路传入（避免改函数签名）
+  // 在调用方通过 (geoRisk as any)?._sentiment 注入
+  const sentiment = (geoRisk as any)?._sentiment as { northboundNetBuy?: number; northbound5dAvg?: number; sentimentScore?: number; advanceDeclineRatio?: number } | undefined;
+  if (sentiment && sentiment.sentimentScore !== undefined) {
+    // 情绪分 → 因子: 恐慌端放大（和地缘因子方向一致）, 乐观端保守
+    if (sentiment.sentimentScore <= -30) {
+      sentimentFactor = sentiment.sentimentScore * 0.008;  // -30→-0.24, -60→-0.48
+    } else if (sentiment.sentimentScore >= 30) {
+      sentimentFactor = sentiment.sentimentScore * 0.004;  // +30→+0.12, +60→+0.24
+    } else {
+      sentimentFactor = sentiment.sentimentScore * 0.003;  // 中性区轻微影响
+    }
+
+    // 北向资金强信号叠加
+    if (sentiment.northboundNetBuy !== undefined) {
+      if (sentiment.northboundNetBuy > 80) sentimentFactor += 0.10;       // 大额流入
+      else if (sentiment.northboundNetBuy < -80) sentimentFactor -= 0.10;  // 大额流出
+    }
+  }
+
   // 波动率修正
   const volAdj = risk.volatility20d > 24 ? 0.626 : risk.volatility20d > 15 ? 0.85 : 1.0;
   trendFactor *= volAdj;
   reversionFactor *= (2 - volAdj);
 
-  // 综合预测
-  const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + seasonalFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor + geoRiskFactor;
+  // 综合预测（新增sentimentFactor）
+  const rawPrediction = trendFactor + reversionFactor + rsiFactor + macdFactor + bbFactor + newsFactor + marketFactor + seasonalFactor + srFactor + crossTfFactor + gapFactor + capitalFlowFactor + geoRiskFactor + sentimentFactor;
   // [v7.1] ATR限幅: 趋势3.5x(v7.0: 4x回撤过大), 极端地缘4x, 默认2.5x
   const atrLimitMult = (forecastRegime === 'trending') ? 3.5
     : (geoRisk && Math.abs(geoRisk.riskScore) > 60) ? 4.0
@@ -3125,12 +3158,14 @@ function computeForecastCore(
   else direction = 'sideways';
 
   // 置信度
-  const allFactors = [trendFactor, reversionFactor, rsiFactor, macdFactor, bbFactor, newsFactor, marketFactor, srFactor, crossTfFactor, gapFactor, capitalFlowFactor, geoRiskFactor];
+  const allFactors = [trendFactor, reversionFactor, rsiFactor, macdFactor, bbFactor, newsFactor, marketFactor, srFactor, crossTfFactor, gapFactor, capitalFlowFactor, geoRiskFactor, sentimentFactor];
   const sameDirection = allFactors.filter(f => (f > 0) === (predictedChangePct > 0) && Math.abs(f) > 0.02).length;
   let confidence = 30 + sameDirection * 7 + Math.abs(predictedChangePct) * 5;
   if (Math.abs(crossTfFactor) > 0.1) confidence += 8;
   if ((srFactor > 0) === (predictedChangePct > 0) && Math.abs(srFactor) > 0.05) confidence += 5;
   if ((capitalFlowFactor > 0) === (predictedChangePct > 0) && Math.abs(capitalFlowFactor) > 0.05) confidence += 6;
+  // 情绪因子与预测同向时增强置信度（情绪+技术共振 = 更可信）
+  if ((sentimentFactor > 0) === (predictedChangePct > 0) && Math.abs(sentimentFactor) > 0.05) confidence += 8;
   confidence = Math.min(90, Math.max(20, confidence));
 
   return {
@@ -3150,6 +3185,7 @@ function computeForecastCore(
       gap: Math.round(gapFactor * 1000) / 1000,
       capitalFlow: Math.round(capitalFlowFactor * 1000) / 1000,
       geoRisk: Math.round(geoRiskFactor * 1000) / 1000,
+      sentiment: Math.round(sentimentFactor * 1000) / 1000,
     },
   };
 }
@@ -3188,7 +3224,7 @@ router.get('/funds/:id/forecast', async (req: Request, res: Response) => {
     await Promise.all(promises);
     const [capitalFlow, geoRisk] = await Promise.all([
       fetchCapitalFlow(fund.name, fcHoldings?.holdings),
-      fetchGeopoliticalRisk(),
+      fetchGeoWithSentiment(),
     ]);
 
     const navValues = navHistory.map(p => p.nav);
@@ -3446,7 +3482,7 @@ router.get('/forecasts/all', async (_req: Request, res: Response) => {
 
     const results: Record<number, any> = {};
     // [v6] 地缘风险全局获取一次（所有基金共用）
-    const geoRisk = await fetchGeopoliticalRisk();
+    const geoRisk = await fetchGeoWithSentiment();
 
     await Promise.all(funds.filter(f => f.holding_shares > 0 && f.code).map(async (f) => {
       try {
@@ -4030,7 +4066,7 @@ export async function getBatchForecasts() {
   `).all() as any[];
 
   const targetDate = getNextTradingDay();
-  const geoRisk = await fetchGeopoliticalRisk();
+  const geoRisk = await fetchGeoWithSentiment();
   const results: any[] = [];
 
   await Promise.all(funds.map(async (f) => {
@@ -4185,7 +4221,7 @@ export async function getSingleForecast(fundId: number, estimateNav?: number) {
   promises.push(fetchSectorNews(sectorKeyword, 10).then(n => { news = n; }));
   promises.push(fetchMarketContext(fund.name).then(m => { marketCtx = m; }));
   await Promise.all(promises);
-  const [capitalFlow, geoRisk] = await Promise.all([fetchCapitalFlow(fund.name, fcHoldings?.holdings), fetchGeopoliticalRisk()]);
+  const [capitalFlow, geoRisk] = await Promise.all([fetchCapitalFlow(fund.name, fcHoldings?.holdings), fetchGeoWithSentiment()]);
 
   const navValues = navHistory.map(p => p.nav);
   if (hasEstimate && navValues.length > 0 && Math.abs(estimateNav! - navValues[navValues.length - 1]) > 0.0001) navValues.push(estimateNav!);

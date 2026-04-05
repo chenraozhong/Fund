@@ -755,6 +755,124 @@ export function checkSectorExposure(
 }
 
 // ============================================================
+// A股市场情绪指标（提升预测可信度的核心数据）
+// ============================================================
+
+export interface MarketSentiment {
+  northboundNetBuy: number;       // 北向资金今日净买入(亿)
+  northbound5dAvg: number;        // 北向资金5日均值(亿)
+  northboundTrend: 'inflow' | 'outflow' | 'neutral';  // 北向趋势
+  marginBalance: number;          // 两融余额(亿) — 杠杆情绪
+  marginChange: number;           // 两融余额变化(亿)
+  advanceDeclineRatio: number;    // 涨跌比（涨家数/跌家数）
+  limitUpCount: number;           // 涨停数
+  limitDownCount: number;         // 跌停数
+  sentimentScore: number;         // 综合情绪分 -100~+100
+}
+
+let _sentimentCache: { data: MarketSentiment; ts: number } | null = null;
+const SENTIMENT_CACHE_TTL = 10 * 60 * 1000; // 10分钟
+
+/** 获取A股市场情绪数据 */
+export async function fetchMarketSentiment(): Promise<MarketSentiment> {
+  if (_sentimentCache && Date.now() - _sentimentCache.ts < SENTIMENT_CACHE_TTL) return _sentimentCache.data;
+
+  const defaultResult: MarketSentiment = {
+    northboundNetBuy: 0, northbound5dAvg: 0, northboundTrend: 'neutral',
+    marginBalance: 0, marginChange: 0,
+    advanceDeclineRatio: 1, limitUpCount: 0, limitDownCount: 0,
+    sentimentScore: 0,
+  };
+
+  try {
+    // 并行获取: 北向资金 + 两融余额 + 涨跌统计
+    const [northbound, marginRes, marketRes] = await Promise.all([
+      fetchNorthboundFlow(5),
+      // 两融余额: 东方财富API
+      fetchWithTimeout('https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_ZCZJMX&columns=ALL&pageNumber=1&pageSize=5&sortColumns=DIM_DATE&sortTypes=-1&source=WEB')
+        .then(r => r.json()).catch(() => null),
+      // 涨跌统计: 东方财富A股概况
+      fetchWithTimeout('https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f1,f2,f3,f4,f104,f105,f106&secids=1.000001&ut=b2884a393a59ad64002292a3e90d46a5')
+        .then(r => r.json()).catch(() => null),
+    ]);
+
+    // 北向资金
+    let nbToday = 0, nb5dAvg = 0;
+    if (northbound.length > 0) {
+      nbToday = northbound[northbound.length - 1]?.netBuy || 0;
+      nb5dAvg = northbound.reduce((s, n) => s + n.netBuy, 0) / northbound.length;
+    }
+    const nbTrend: 'inflow' | 'outflow' | 'neutral' =
+      nb5dAvg > 30 ? 'inflow' : nb5dAvg < -30 ? 'outflow' : 'neutral';
+
+    // 两融余额
+    let marginBal = 0, marginChg = 0;
+    if (marginRes?.result?.data?.length >= 2) {
+      const rows = marginRes.result.data;
+      marginBal = (rows[0]?.RZRQYE || 0) / 1e8;  // 转亿
+      const prevBal = (rows[1]?.RZRQYE || 0) / 1e8;
+      marginChg = marginBal - prevBal;
+    }
+
+    // 涨跌统计
+    let advDecRatio = 1, limitUp = 0, limitDown = 0;
+    if (marketRes?.data?.diff?.[0]) {
+      const d = marketRes.data.diff[0];
+      const advances = d.f104 || 0;    // 上涨家数
+      const declines = d.f105 || 0;    // 下跌家数
+      advDecRatio = declines > 0 ? advances / declines : 2;
+      limitUp = d.f106 || 0;           // 涨停
+      // limitDown不在这个接口，用其他方式估算
+    }
+
+    // 综合情绪评分
+    let sentimentScore = 0;
+
+    // 北向资金: 大额流入/流出影响大
+    if (nbToday > 100) sentimentScore += 25;
+    else if (nbToday > 50) sentimentScore += 15;
+    else if (nbToday > 0) sentimentScore += 5;
+    else if (nbToday < -100) sentimentScore -= 25;
+    else if (nbToday < -50) sentimentScore -= 15;
+    else if (nbToday < 0) sentimentScore -= 5;
+
+    // 北向趋势: 5日趋势比单日更重要
+    if (nbTrend === 'inflow') sentimentScore += 15;
+    else if (nbTrend === 'outflow') sentimentScore -= 15;
+
+    // 两融: 杠杆资金增减
+    if (marginChg > 50) sentimentScore += 10;
+    else if (marginChg > 0) sentimentScore += 3;
+    else if (marginChg < -50) sentimentScore -= 10;
+    else if (marginChg < 0) sentimentScore -= 3;
+
+    // 涨跌比
+    if (advDecRatio > 3) sentimentScore += 15;       // 普涨
+    else if (advDecRatio > 1.5) sentimentScore += 8;
+    else if (advDecRatio < 0.3) sentimentScore -= 15; // 普跌
+    else if (advDecRatio < 0.7) sentimentScore -= 8;
+
+    sentimentScore = Math.max(-100, Math.min(100, sentimentScore));
+
+    const result: MarketSentiment = {
+      northboundNetBuy: Math.round(nbToday * 100) / 100,
+      northbound5dAvg: Math.round(nb5dAvg * 100) / 100,
+      northboundTrend: nbTrend,
+      marginBalance: Math.round(marginBal),
+      marginChange: Math.round(marginChg),
+      advanceDeclineRatio: Math.round(advDecRatio * 100) / 100,
+      limitUpCount: limitUp, limitDownCount: limitDown,
+      sentimentScore,
+    };
+
+    _sentimentCache = { data: result, ts: Date.now() };
+    return result;
+  } catch {
+    return defaultResult;
+  }
+}
+
+// ============================================================
 // 地缘/事件风险因子（全球风险温度计）
 // ============================================================
 
