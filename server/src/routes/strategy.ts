@@ -3958,6 +3958,218 @@ router.get('/forecasts/fund/:id', async (req: Request, res: Response) => {
 });
 
 // ============================================================
+// ============================================================
+// 波段交易建议（活仓7-30天波段，基于波动率+网格+持有期约束）
+// ============================================================
+
+router.get('/funds/:id/band-trade', async (req: Request, res: Response) => {
+  try {
+    const fundId = Number(req.params.id);
+    const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+    if (!fund) { res.status(404).json({ error: '基金不存在' }); return; }
+
+    const realtimeNav = req.query.nav ? parseFloat(req.query.nav as string) : (fund.market_nav || 0);
+    if (realtimeNav <= 0) { res.status(400).json({ error: '需要净值' }); return; }
+
+    // 获取历史净值
+    let navHistory: NavPoint[] = [];
+    if (fund.code) navHistory = await fetchNavHistory(fund.code, 60);
+    const navValues = navHistory.map(p => p.nav);
+    if (navValues.length < 20) { res.json({ suitable: false, reason: '历史数据不足', signals: [] }); return; }
+
+    // 计算波动率（判断是否适合做波段）
+    const ret20 = navValues.slice(-21).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100).slice(1);
+    const vol20 = Math.sqrt(ret20.reduce((s, r) => s + r * r, 0) / ret20.length) * Math.sqrt(250);
+    const avgDailyMove = ret20.reduce((s, r) => s + Math.abs(r), 0) / ret20.length;
+
+    // 波段适合度评分
+    let suitability = 0;
+    const suitReasons: string[] = [];
+    if (vol20 > 25) { suitability += 3; suitReasons.push(`高波动(${vol20.toFixed(0)}%)，差价空间大`); }
+    else if (vol20 > 18) { suitability += 2; suitReasons.push(`中等波动(${vol20.toFixed(0)}%)`); }
+    else { suitability += 1; suitReasons.push(`低波动(${vol20.toFixed(0)}%)，波段空间有限`); }
+
+    if (avgDailyMove > 1.0) { suitability += 2; suitReasons.push(`日均波幅${avgDailyMove.toFixed(2)}%`); }
+    else if (avgDailyMove > 0.5) { suitability += 1; }
+
+    const suitable = suitability >= 3;
+
+    // 持仓数据
+    const posRow = db.prepare(`
+      SELECT COALESCE(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN type='sell' THEN shares ELSE 0 END),0) as holding_shares,
+        COALESCE(SUM(CASE WHEN type='buy' THEN shares*price ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN type='sell' THEN shares*price ELSE 0 END),0) +
+        COALESCE(SUM(CASE WHEN type='dividend' THEN price ELSE 0 END),0) as cost_basis
+      FROM transactions WHERE fund_id = ?
+    `).get(fundId) as any;
+    const holdingShares = posRow.holding_shares;
+    const costNav = holdingShares > 0 ? posRow.cost_basis / holdingShares : 0;
+    const basePct = fund.base_position_pct ?? 70;
+    const baseShares = r4(holdingShares * basePct / 100);
+    const swingShares = r4(holdingShares - baseShares);
+    const swingValue = Math.round(swingShares * realtimeNav);
+
+    // 技术指标
+    const tech = calcTechnical(navValues);
+    const atrPct = tech.atr14 > 0 ? (tech.atr14 / realtimeNav) * 100 : 0.5;
+
+    // 网格计算：基于ATR确定买卖档位
+    const gridStep = Math.round(atrPct * 100) / 100;  // 每档=1个ATR
+    const currentPctB = tech.bollingerBands.percentB;
+
+    // 生成波段信号
+    const signals: {
+      action: 'buy' | 'sell' | 'hold';
+      urgency: 'high' | 'medium' | 'low';
+      amount: number;
+      shares: number;
+      targetNav: number;
+      holdDays: string;
+      reason: string;
+      grid: { buyLevel: number; sellLevel: number; spread: number };
+    }[] = [];
+
+    const gainPct = costNav > 0 ? ((realtimeNav - costNav) / costNav) * 100 : 0;
+
+    // === 买入信号 ===
+    // 条件1: 布林带下轨附近 (%B < 20)
+    if (currentPctB < 20 && swingValue < holdingShares * realtimeNav * 0.3) {
+      const buyNav = realtimeNav;
+      const sellTarget = r4(realtimeNav * (1 + gridStep * 2 / 100));
+      const spread = r4((sellTarget - buyNav) / buyNav * 100);
+      const buyAmount = Math.min(Math.round(swingValue * 0.3), 5000);
+      const buyShares = r4(buyAmount / buyNav);
+      signals.push({
+        action: 'buy', urgency: currentPctB < 5 ? 'high' : 'medium',
+        amount: buyAmount, shares: buyShares,
+        targetNav: sellTarget,
+        holdDays: '7-15天',
+        reason: `布林下轨(%B=${currentPctB.toFixed(0)})，等反弹至${sellTarget.toFixed(4)}(+${spread}%)卖出`,
+        grid: { buyLevel: buyNav, sellLevel: sellTarget, spread },
+      });
+    }
+
+    // 条件2: RSI超卖 (< 25)
+    if (tech.rsi14 < 25 && signals.length === 0) {
+      const buyNav = realtimeNav;
+      const sellTarget = r4(realtimeNav * (1 + atrPct * 1.5 / 100));
+      const spread = r4((sellTarget - buyNav) / buyNav * 100);
+      const buyAmount = Math.min(Math.round(swingValue * 0.2), 3000);
+      signals.push({
+        action: 'buy', urgency: 'medium',
+        amount: buyAmount, shares: r4(buyAmount / buyNav),
+        targetNav: sellTarget,
+        holdDays: '7-20天',
+        reason: `RSI超卖(${tech.rsi14.toFixed(0)})，技术性反弹概率大`,
+        grid: { buyLevel: buyNav, sellLevel: sellTarget, spread },
+      });
+    }
+
+    // 条件3: 大幅回调后（近5日跌>3%且趋势本身是上涨的）
+    const mom5d = navValues.length >= 6 ? ((navValues[navValues.length-1] / navValues[navValues.length-6]) - 1) * 100 : 0;
+    const mom20d = navValues.length >= 21 ? ((navValues[navValues.length-1] / navValues[navValues.length-21]) - 1) * 100 : 0;
+    if (mom5d < -3 && mom20d > 0 && signals.length === 0) {
+      const buyNav = realtimeNav;
+      const sellTarget = r4(realtimeNav * (1 + Math.abs(mom5d) * 0.6 / 100));
+      const spread = r4((sellTarget - buyNav) / buyNav * 100);
+      signals.push({
+        action: 'buy', urgency: 'medium',
+        amount: Math.min(3000, Math.round(swingValue * 0.25)),
+        shares: r4(3000 / buyNav),
+        targetNav: sellTarget,
+        holdDays: '7-14天',
+        reason: `上升趋势中回调${mom5d.toFixed(1)}%，反弹至${sellTarget.toFixed(4)}卖出`,
+        grid: { buyLevel: buyNav, sellLevel: sellTarget, spread },
+      });
+    }
+
+    // === 卖出信号 ===
+    // 条件1: 布林上轨 (%B > 85)
+    if (currentPctB > 85 && swingShares > 0) {
+      const sellShares = r4(swingShares * (currentPctB > 95 ? 0.5 : 0.3));
+      signals.push({
+        action: 'sell', urgency: currentPctB > 95 ? 'high' : 'medium',
+        amount: Math.round(sellShares * realtimeNav),
+        shares: sellShares,
+        targetNav: r4(realtimeNav * (1 - gridStep / 100)),
+        holdDays: '立即',
+        reason: `布林上轨(%B=${currentPctB.toFixed(0)})，活仓${currentPctB > 95 ? '50%' : '30%'}止盈`,
+        grid: { buyLevel: r4(realtimeNav * (1 - gridStep * 2 / 100)), sellLevel: realtimeNav, spread: gridStep * 2 },
+      });
+    }
+
+    // 条件2: 连涨5天+活仓盈利
+    const streak5up = ret20.slice(-5).every(r => r > 0);
+    if (streak5up && gainPct > 3 && swingShares > 0 && signals.filter(s => s.action === 'sell').length === 0) {
+      const sellShares = r4(swingShares * 0.2);
+      signals.push({
+        action: 'sell', urgency: 'low',
+        amount: Math.round(sellShares * realtimeNav),
+        shares: sellShares,
+        targetNav: r4(realtimeNav * (1 - atrPct / 100)),
+        holdDays: '立即',
+        reason: `连涨5天+盈利${gainPct.toFixed(1)}%，锁定20%活仓利润`,
+        grid: { buyLevel: r4(realtimeNav * (1 - gridStep * 1.5 / 100)), sellLevel: realtimeNav, spread: gridStep * 1.5 },
+      });
+    }
+
+    // === 无信号时 ===
+    if (signals.length === 0) {
+      signals.push({
+        action: 'hold', urgency: 'low',
+        amount: 0, shares: 0,
+        targetNav: 0, holdDays: '-',
+        reason: `当前%B=${currentPctB.toFixed(0)} RSI=${tech.rsi14.toFixed(0)}，无明确波段机会，等待回调或突破`,
+        grid: {
+          buyLevel: r4(realtimeNav * (1 - gridStep * 1.5 / 100)),
+          sellLevel: r4(realtimeNav * (1 + gridStep * 1.5 / 100)),
+          spread: gridStep * 3,
+        },
+      });
+    }
+
+    // 7天持有期检查
+    const recentBuys = db.prepare(
+      "SELECT date, shares, price FROM transactions WHERE fund_id = ? AND type = 'buy' AND date >= date('now', '-7 days') ORDER BY date DESC"
+    ).all(fundId) as any[];
+    const recentBuyShares = recentBuys.reduce((s: number, t: any) => s + t.shares, 0);
+    const hasRecentBuy = recentBuys.length > 0;
+
+    res.json({
+      suitable,
+      suitability,
+      suitReasons,
+      fundName: fund.name,
+      nav: realtimeNav,
+      volatility: Math.round(vol20 * 10) / 10,
+      avgDailyMove: Math.round(avgDailyMove * 100) / 100,
+      atrPct: Math.round(atrPct * 100) / 100,
+      position: {
+        holdingShares: r4(holdingShares),
+        costNav: r4(costNav),
+        gainPct: Math.round(gainPct * 100) / 100,
+        baseShares, swingShares, swingValue,
+        basePct,
+      },
+      technical: {
+        percentB: Math.round(currentPctB),
+        rsi14: Math.round(tech.rsi14),
+        trend: tech.trend,
+        macdHistogram: tech.macd.histogram > 0 ? 'positive' : 'negative',
+        support: tech.support,
+        resistance: tech.resistance,
+      },
+      gridStep: Math.round(gridStep * 100) / 100,
+      signals,
+      holdingWarning: hasRecentBuy ? `近7天有${recentBuys.length}笔买入(${recentBuyShares.toFixed(0)}份)，卖出将产生1.5%赎回费` : null,
+      recentBuys: recentBuys.map((t: any) => ({ date: t.date, shares: r4(t.shares), price: r4(t.price) })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '波段分析失败: ' + err.message });
+  }
+});
+
 // Exported service functions for local-router (Harmony WebView)
 // These extract route-handler logic so both Express routes and
 // local-router share the same code — any fix applies to both.

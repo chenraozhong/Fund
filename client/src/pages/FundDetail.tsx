@@ -231,6 +231,7 @@ export default function FundDetail() {
   const [selectedModel, setSelectedModel] = useState<string>('')
   const [forecast, setForecast] = useState<ForecastResult | null>(null)
   const [forecastLoading, setForecastLoading] = useState(false)
+  const [bandTrade, setBandTrade] = useState<any>(null)
   const [snapshots, setSnapshots] = useState<DailySnapshot[]>([])
   const [editingBase, setEditingBase] = useState(false)
   const [baseForm, setBaseForm] = useState(30)
@@ -245,6 +246,7 @@ export default function FundDetail() {
           setLatestNavInfo({ nav: nav.nav, prevNav: (nav as any).prev_nav || 0, date: nav.date, estimatedNav: nav.estimated_nav, estimateTime: nav.estimate_time })
           if (nav.estimated_nav && nav.estimated_nav > 0) {
             setQuickNav(nav.estimated_nav.toFixed(4))
+            api.getBandTrade(fundId, nav.estimated_nav).then(setBandTrade).catch(() => {})
           }
         }).catch(() => {})
       }
@@ -253,6 +255,10 @@ export default function FundDetail() {
     api.getSnapshots(fundId, 90).then(setSnapshots).catch(() => {})
     setForecastLoading(true)
     api.getForecast(fundId).then(setForecast).catch(() => {}).finally(() => setForecastLoading(false))
+    // 波段交易建议（需要净值）
+    if (data?.fund?.market_nav) {
+      api.getBandTrade(fundId, data.fund.market_nav).then(setBandTrade).catch(() => {})
+    }
   }
   useEffect(() => { load() }, [fundId])
   useEffect(() => {
@@ -930,6 +936,80 @@ export default function FundDetail() {
         )
       })()}
 
+      {/* 波段交易建议（活仓短线） */}
+      {bandTrade && bandTrade.suitable !== false && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-5">
+          <div className="flex items-center gap-2.5 mb-3">
+            <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
+              <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-gray-900">波段交易</h3>
+              <p className="text-xs text-gray-400">
+                活仓{bandTrade.position?.swingShares?.toFixed(0) || 0}份(¥{bandTrade.position?.swingValue || 0})
+                · 波动率{bandTrade.volatility}%
+                · 网格步长{bandTrade.gridStep}%
+              </p>
+            </div>
+            {bandTrade.suitability >= 3 ? (
+              <span className="px-2 py-1 rounded-lg bg-purple-50 text-purple-700 text-xs font-bold">适合波段</span>
+            ) : (
+              <span className="px-2 py-1 rounded-lg bg-gray-100 text-gray-500 text-xs font-bold">波段空间有限</span>
+            )}
+          </div>
+
+          {bandTrade.holdingWarning && (
+            <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+              ⚠️ {bandTrade.holdingWarning}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {bandTrade.signals?.map((sig: any, i: number) => (
+              <div key={i} className={`rounded-lg p-3 ${
+                sig.action === 'buy' ? 'bg-emerald-50 border border-emerald-200' :
+                sig.action === 'sell' ? 'bg-red-50 border border-red-200' :
+                'bg-gray-50 border border-gray-200'
+              }`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
+                    sig.action === 'buy' ? 'bg-emerald-100 text-emerald-700' :
+                    sig.action === 'sell' ? 'bg-red-100 text-red-700' :
+                    'bg-gray-200 text-gray-600'
+                  }`}>
+                    {sig.action === 'buy' ? '买入' : sig.action === 'sell' ? '卖出' : '观望'}
+                    {sig.urgency === 'high' && ' ❗'}
+                  </span>
+                  {sig.amount > 0 && (
+                    <span className="text-sm font-bold text-gray-900">
+                      {sig.shares > 0 ? `${sig.shares}份` : ''} ¥{sig.amount.toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-700 leading-relaxed">{sig.reason}</p>
+                {sig.holdDays !== '-' && (
+                  <div className="flex items-center gap-3 mt-1.5 text-[11px] text-gray-400">
+                    <span>预计持有: {sig.holdDays}</span>
+                    {sig.grid && sig.grid.spread > 0 && <span>网格价差: {sig.grid.spread.toFixed(1)}%</span>}
+                    {sig.targetNav > 0 && <span>目标净值: {sig.targetNav.toFixed(4)}</span>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {bandTrade.technical && (
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-400">
+              <span>%B={bandTrade.technical.percentB}</span>
+              <span>RSI={bandTrade.technical.rsi14}</span>
+              <span>趋势={bandTrade.technical.trend}</span>
+              {bandTrade.technical.support > 0 && <span>支撑={bandTrade.technical.support.toFixed(4)}</span>}
+              {bandTrade.technical.resistance > 0 && <span>阻力={bandTrade.technical.resistance.toFixed(4)}</span>}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 技术面参考（弱化展示，默认折叠） */}
       <details className="bg-white rounded-xl border border-gray-200 shadow-sm">
         <summary className="p-3 sm:p-5 cursor-pointer select-none">
@@ -942,8 +1022,9 @@ export default function FundDetail() {
               <p className="text-xs text-gray-400">基于技术指标的信号汇总 · 准确率约65% · 仅供参考不构成投资建议</p>
             </div>
           {forecastLoading && <span className="text-xs text-gray-400 animate-pulse ml-auto">分析中...</span>}
-        </div>
-
+          </div>
+        </summary>
+        <div className="px-3 sm:px-5 pb-3 sm:pb-5">
         {forecast?.prediction ? (
           <div className="space-y-4">
             {/* 预测结果 */}

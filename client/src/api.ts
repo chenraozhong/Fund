@@ -524,6 +524,8 @@ export const api = {
     impact: { totalProfit: number; totalSellShares: number; newHoldingShares: number; newCostNav: number; costReduction: number };
   }>(`/strategy/funds/${id}/swing?nav=${nav}`),
 
+  getBandTrade: (id: number, nav: number) => request<any>(`/strategy/funds/${id}/band-trade?nav=${nav}`),
+
   importPreview: (text: string) =>
     request<{ funds: ImportPreview[] }>('/import/preview', { method: 'POST', body: JSON.stringify({ text }) }),
   importExecute: (text: string) =>
