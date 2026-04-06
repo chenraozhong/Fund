@@ -230,12 +230,12 @@ class LiveAlignedV81(Strategy):
                 if mkt_chg < -1.0:
                     buy_decay = min(buy_decay, 0.4)
 
-            # 深亏限制
-            if cur_dd > 12:
-                buy_decay = min(buy_decay, 0.2 / max(raw, 0.01))
+            # 深亏限制（>20%时才限制，12%太严）
+            if cur_dd > 20:
+                buy_decay = min(buy_decay, 0.3)
 
-            # 应用最严的单一衰减（而非全部相乘）
-            raw *= max(buy_decay, 0.15)  # 保底15%，永远不完全归零
+            # 应用最严的单一衰减，保底30%（对齐线上v8.1b）
+            raw *= max(buy_decay, 0.30)
 
         signal = max(-1, min(1, raw / 2))
 

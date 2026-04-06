@@ -2106,55 +2106,62 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[v7.5组合防御] 超60%基金亏损>10%，系统性危机模式，全局暂停买入`);
   }
 
-  // [v8.1a] FOMC会议周: 买入自动缩减50%（波动加大期间谨慎）
-  if (action === 'buy' && opAmount > 0 && geoRisk && geoRisk.isFomcWeek) {
-    opShares = r4(opShares * 0.5);
-    opAmount = Math.round(opShares * nav);
-    reasoning.push(`[v8.1a宏观] FOMC会议周，买入缩减50%防范波动`);
-  }
 
-  // [v8.1a] VIX高恐慌: 买入大幅缩减
-  if (action === 'buy' && opAmount > 0 && geoRisk && geoRisk.vix && geoRisk.vix.value > 30) {
-    const vixDecay = geoRisk.vix.value > 40 ? 0.2 : 0.4;
-    opShares = r4(opShares * vixDecay);
-    opAmount = Math.round(opShares * nav);
-    reasoning.push(`[v8.1a宏观] VIX=${geoRisk.vix.value.toFixed(0)}高恐慌，买入缩减${Math.round((1-vixDecay)*100)}%`);
-  }
+  // [v8.1b] 买入防御层：取最严者胜（不乘法叠加），保底30%
+  // 修复：之前7层乘法叠加导致买入金额被削减到接近0
+  if (action === 'buy' && opAmount > 0) {
+    let buyDecay = 1.0;
+    const decayReasons: string[] = [];
 
-  // [v8.1a] 动量守门员: sigmoid衰减（不再硬禁令）+ V型反转豁免
-  if (action === 'buy' && opAmount > 0 && (modelCfg.id === 'v8.1')) {
-    if (navValues.length >= 10) {
+    // FOMC会议周
+    if (geoRisk && geoRisk.isFomcWeek) {
+      buyDecay = Math.min(buyDecay, 0.5);
+      decayReasons.push('FOMC周');
+    }
+
+    // VIX高恐慌
+    if (geoRisk && geoRisk.vix && geoRisk.vix.value > 30) {
+      const vd = geoRisk.vix.value > 40 ? 0.2 : 0.4;
+      buyDecay = Math.min(buyDecay, vd);
+      decayReasons.push(`VIX${geoRisk.vix.value.toFixed(0)}`);
+    }
+
+    // 动量守门员（仅v8.1）
+    if (modelCfg.id === 'v8.1' && navValues.length >= 10) {
       const fundMom10 = ((navValues[navValues.length - 1] / navValues[navValues.length - 10]) - 1) * 100;
       if (fundMom10 < -1.0) {
-        // V型反转检测: 近3日涨幅>2% + MACD柱由负转正 → 豁免动量禁令
-        const recent3d = navValues.length >= 3 ? ((navValues[navValues.length-1] / navValues[navValues.length-4]) - 1) * 100 : 0;
-        const isVReversal = recent3d > 2.0 && technical.macd.histogram > 0;
-        if (isVReversal) {
-          opShares = r4(opShares * 0.5); // V型���转允许半额买入
-          opAmount = Math.round(opShares * nav);
-          reasoning.push(`[v8.1a反转] 10日动量${fundMom10.toFixed(1)}%为负但近3日反弹${recent3d.toFixed(1)}%+MACD转正，半额试探`);
+        const recent3d = navValues.length >= 4 ? ((navValues[navValues.length-1] / navValues[navValues.length-4]) - 1) * 100 : 0;
+        if (recent3d > 2.0 && technical.macd.histogram > 0) {
+          buyDecay = Math.min(buyDecay, 0.5);
+          decayReasons.push('V反转');
         } else {
-          // sigmoid衰减: 动量越负衰减越强，但不完全归零
-          const decay = Math.max(0.15, 1 / (1 + Math.exp(-0.8 * (Math.abs(fundMom10) - 3))));
-          const keepRatio = 1 - decay; // mom=-1%→保留约85%, mom=-5%→保留约25%, mom=-8%→保留约15%
-          opShares = r4(opShares * keepRatio);
-          opAmount = Math.round(opShares * nav);
-          reasoning.push(`[v8.1a动量] 10日动量${fundMom10.toFixed(1)}%，信号衰减至${Math.round(keepRatio*100)}%`);
+          const d = Math.max(0.15, 1 / (1 + Math.exp(-0.8 * (Math.abs(fundMom10) - 3))));
+          buyDecay = Math.min(buyDecay, 1 - d);
+          decayReasons.push(`动量${fundMom10.toFixed(1)}%`);
         }
       }
     }
-    // 大盘动量检查: 用当日大盘跌幅>1%时才缩减（修复P2: 0.5%过于敏感）
-    if (action === 'buy' && opAmount > 0 && market && market.marketIndices) {
+
+    // 大盘下跌
+    if (market && market.marketIndices) {
       const shIdx = market.marketIndices.find((idx: any) => idx.name === '上证指数');
       if (shIdx && shIdx.changePct < -1.0) {
-        opShares = r4(opShares * 0.4);
-        opAmount = Math.round(opShares * nav);
-        reasoning.push(`[v8.1a大盘] 大盘跌${shIdx.changePct.toFixed(1)}%>1%，买入缩减60%`);
+        buyDecay = Math.min(buyDecay, 0.4);
+        decayReasons.push(`大盘${shIdx.changePct.toFixed(1)}%`);
       }
+    }
+
+    // 应用：取最严的单一衰减，保底30%
+    buyDecay = Math.max(buyDecay, 0.3);
+    if (buyDecay < 1.0) {
+      opShares = r4(opShares * buyDecay);
+      opAmount = Math.round(opShares * nav);
+      reasoning.push(`[v8.1b防御] 缩减至${Math.round(buyDecay*100)}%（${decayReasons.join('+')}）`);
     }
   }
 
-  // === 预测整合（v6新增：决策与预测模型联动）===
+
+    // === 预测整合（v6新增：决策与预测模型联动）===
   const forecast = computeForecastCore(navValues, technical, riskMetrics, newsScore, market, capitalFlow, geoRisk, fund.name);
   const fcDirLabel = forecast.direction === 'up' ? '上涨' : forecast.direction === 'down' ? '下跌' : '横盘';
   const fcGeoNote = geoRisk && geoRisk.signals.length > 0
