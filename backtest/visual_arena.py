@@ -744,8 +744,8 @@ def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
             signal = strategy.generate_signal(df, i, market_df)
             signals_history.append(signal)
 
-            # 信号 → 操作
-            if signal > 0.3 and cash > portfolio_value * 0.05:
+            # 信号 → 操作（阈值0.05对齐线上：线上任何正信号都会产生买入建议）
+            if signal > 0.05 and cash > portfolio_value * 0.05:
                 # 买入: 信号越强买越多
                 buy_pct = min(signal * 0.5, 0.4)
                 buy_amount = cash * buy_pct
@@ -759,7 +759,7 @@ def run_backtest_enhanced(df: pd.DataFrame, strategy: Strategy,
                     'shares': buy_shares, 'amount': buy_amount,
                     'signal': signal, 'fee': 0
                 })
-            elif signal < -0.3 and position > 0:
+            elif signal < -0.05 and position > 0:
                 # 卖出: FIFO扣赎回费
                 sell_pct = min(abs(signal) * 0.5, 0.4)
                 sell_shares = position * sell_pct
