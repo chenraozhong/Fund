@@ -1512,11 +1512,27 @@ function getAvailableModels() {
   return Object.values(MODEL_CONFIGS).map(m => ({ id: m.id, label: m.label, description: m.description }));
 }
 
+/** 根据基金名称自动选择最优策略（基于回测验证） */
+function autoSelectModel(fundName: string): ModelVersionId {
+  // 黄金类 → v8.0非对称（卡尔玛8.0+，趋势追踪最优）
+  if (/黄金|gold/i.test(fundName)) return 'v8.0';
+  // 债券类 → v7.3（简单稳健，差异不大）
+  if (/债券|短债|纯债|固收/i.test(fundName)) return 'v7.3';
+  // 高波动科技/半导体/AI → v7.3（卡尔玛2.40最高，对齐版v6.2卡2.21）
+  if (/半导体|芯片|集成电路|AI|人工智能|机器人|算力|云计算|卫星|通信|科技/i.test(fundName)) return 'v7.3';
+  // 新能源/光伏 → v7.3（高波动品种趋势追踪有优势）
+  if (/新能源|光伏|锂电|碳中和|清洁能源|低碳/i.test(fundName)) return 'v7.3';
+  // 默认 → v8.0非对称（全品种卡尔玛冠军）
+  return 'v8.0';
+}
+
 // 完整决策引擎核心函数（单基金）
 async function computeDecision(fundId: number | string, realtimeNav: number, modelVersion?: ModelVersionId): Promise<any> {
-  const modelCfg = MODEL_CONFIGS[modelVersion || DEFAULT_MODEL] || MODEL_CONFIGS[DEFAULT_MODEL];
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
   if (!fund) throw new Error('基金不存在');
+  // 未指定模型时自动根据基金类型选择
+  const effectiveModel = modelVersion || autoSelectModel(fund.name);
+  const modelCfg = MODEL_CONFIGS[effectiveModel] || MODEL_CONFIGS[DEFAULT_MODEL];
 
   const nav = realtimeNav > 0 ? realtimeNav : (fund.market_nav || 0);
   if (nav <= 0) throw new Error('需要提供净值');
