@@ -215,8 +215,9 @@ register('GET', '/strategy/model-versions', () => ({
   },
 }));
 register('GET', '/strategy/funds/:id/forecast', (p, q) => getSingleForecast(Number(p.id), q.estimate ? parseFloat(q.estimate) : undefined));
-// 波段交易和组合配置（通过Express路由处理，local-router暂简化版）
-register('GET', '/strategy/funds/:id/band-trade', () => ({ suitable: false, reason: '手机端暂不支持波段分析', signals: [] }));
+// 波段交易
+import { getBandTradeAdvice } from './routes/strategy';
+register('GET', '/strategy/funds/:id/band-trade', (p, q) => getBandTradeAdvice(Number(p.id), q.nav ? parseFloat(q.nav) : undefined));
 register('GET', '/strategy/portfolio-advice', () => ({ funds: [], summary: { totalValue: 0, totalFunds: 0, core: {count:0,value:0,pct:0}, swing: {count:0,value:0,pct:0}, reduce: {count:0,value:0,pct:0}, estimatedAnnualReturn: 0, targetAlloc: {core:70,swing:20,reduce:10} } }));
 register('GET', '/strategy/funds/:id/swing', async (p, q) => {
   const fundId = Number(p.id);

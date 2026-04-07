@@ -2229,13 +2229,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[预测确认] 预测明日跌，卖出时机合理`);
   }
 
-  // [v7.4 盲区5] 赎回时滞提醒(forecast已计算)
-  if (action === 'sell' && opShares > 0 && modelCfg.id === 'v7.4' || modelCfg.id === 'v8.0' || modelCfg.id === 'v8.1') {
-    const estimatedDays = fund.code && /ETF|联接/.test(fund.name) ? 'T+1~T+2' : 'T+2~T+4';
-    if (forecast.direction === 'down' && Math.abs(forecast.predictedChangePct) > 0.5) {
-      reasoning.push(`[v7.4赎回时滞] 预计${estimatedDays}到账，期间可能再跌${(Math.abs(forecast.predictedChangePct) * 2).toFixed(1)}%`);
-    }
-  }
+  // 赎回按当日净值生效，无T+N到账延迟（已删除错误的时滞提醒）
 
   // 布林带高位拦截(sigmoid vs 硬阈值)
   if (action === 'buy' && opAmount > 0 && !isTrendMode && !modelCfg.useSigmoid) {
@@ -4344,6 +4338,71 @@ export { generateSignals, generateAdvice, generateSummary };
 export { generateShortTermPlan, generateLongTermPlan, generateRecoveryPlan };
 export { scoreNewsSentiment };
 export { r4, toLocalDateStr, getNextTradingDay, getTodayStr };
+export { autoSelectModel };
+
+/** Band trade advice (mirrors GET /strategy/funds/:id/band-trade) */
+export async function getBandTradeAdvice(fundId: number | string, realtimeNav?: number) {
+  const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(fundId) as any;
+  if (!fund) throw { status: 404, error: '基金不存在' };
+  const nav = (realtimeNav && realtimeNav > 0) ? realtimeNav : (fund.market_nav || 0);
+  if (nav <= 0) return { suitable: false, reason: '无净值数据', signals: [] };
+
+  let navHistory: NavPoint[] = [];
+  if (fund.code) navHistory = await fetchNavHistory(fund.code, 60);
+  const navValues = navHistory.map(p => p.nav);
+  if (navValues.length < 20) return { suitable: false, reason: '历史数据不足', signals: [] };
+
+  const ret20 = navValues.slice(-21).map((v, i, a) => i === 0 ? 0 : ((v - a[i-1]) / a[i-1]) * 100).slice(1);
+  const vol20 = Math.sqrt(ret20.reduce((s, r) => s + r * r, 0) / ret20.length) * Math.sqrt(250);
+  const avgDailyMove = ret20.reduce((s, r) => s + Math.abs(r), 0) / ret20.length;
+
+  let suitability = 0;
+  const suitReasons: string[] = [];
+  if (vol20 > 25) { suitability += 3; suitReasons.push(`高波动(${vol20.toFixed(0)}%)`); }
+  else if (vol20 > 18) { suitability += 2; suitReasons.push(`中等波动(${vol20.toFixed(0)}%)`); }
+  else { suitability += 1; suitReasons.push(`低波动(${vol20.toFixed(0)}%)`); }
+  if (avgDailyMove > 1.0) { suitability += 2; } else if (avgDailyMove > 0.5) { suitability += 1; }
+
+  const tech = calcTechnical(navValues);
+  const atrPct = tech.atr14 > 0 ? (tech.atr14 / nav) * 100 : 0.5;
+  const gridStep = Math.round(atrPct * 100) / 100;
+  const currentPctB = tech.bollingerBands.percentB;
+
+  const posRow = db.prepare(`SELECT COALESCE(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END),0)-COALESCE(SUM(CASE WHEN type='sell' THEN shares ELSE 0 END),0) as hs, COALESCE(SUM(CASE WHEN type='buy' THEN shares*price ELSE 0 END),0)-COALESCE(SUM(CASE WHEN type='sell' THEN shares*price ELSE 0 END),0)+COALESCE(SUM(CASE WHEN type='dividend' THEN price ELSE 0 END),0) as cb FROM transactions WHERE fund_id=?`).get(fundId) as any;
+  const holdingShares = posRow.hs;
+  const costNav = holdingShares > 0 ? posRow.cb / holdingShares : 0;
+  const basePct = fund.base_position_pct ?? 70;
+  const swingShares = r4(holdingShares * (1 - basePct / 100));
+  const swingValue = Math.round(swingShares * nav);
+  const gainPct = costNav > 0 ? ((nav - costNav) / costNav) * 100 : 0;
+
+  const signals: any[] = [];
+  if (currentPctB < 20 && swingValue < holdingShares * nav * 0.3) {
+    const sellTarget = r4(nav * (1 + gridStep * 2 / 100));
+    const spread = r4((sellTarget - nav) / nav * 100);
+    const buyAmt = Math.min(Math.round(swingValue * 0.3), 5000);
+    signals.push({ action: 'buy', urgency: currentPctB < 5 ? 'high' : 'medium', amount: buyAmt, shares: r4(buyAmt / nav), targetNav: sellTarget, holdDays: '7-15天', reason: `布林下轨(%B=${currentPctB.toFixed(0)})，等反弹至${sellTarget.toFixed(4)}(+${spread}%)卖出`, grid: { buyLevel: nav, sellLevel: sellTarget, spread } });
+  } else if (tech.rsi14 < 25) {
+    const sellTarget = r4(nav * (1 + atrPct * 1.5 / 100));
+    const buyAmt = Math.min(Math.round(swingValue * 0.2), 3000);
+    signals.push({ action: 'buy', urgency: 'medium', amount: buyAmt, shares: r4(buyAmt / nav), targetNav: sellTarget, holdDays: '7-20天', reason: `RSI超卖(${tech.rsi14.toFixed(0)})，技术性反弹概率大`, grid: { buyLevel: nav, sellLevel: sellTarget, spread: r4((sellTarget - nav) / nav * 100) } });
+  } else if (currentPctB > 85 && swingShares > 0) {
+    const sellShares = r4(swingShares * (currentPctB > 95 ? 0.5 : 0.3));
+    signals.push({ action: 'sell', urgency: currentPctB > 95 ? 'high' : 'medium', amount: Math.round(sellShares * nav), shares: sellShares, targetNav: r4(nav * (1 - gridStep / 100)), holdDays: '立即', reason: `布林上轨(%B=${currentPctB.toFixed(0)})，活仓${currentPctB > 95 ? '50%' : '30%'}止盈`, grid: { buyLevel: r4(nav * (1 - gridStep * 2 / 100)), sellLevel: nav, spread: gridStep * 2 } });
+  }
+  if (signals.length === 0) {
+    signals.push({ action: 'hold', urgency: 'low', amount: 0, shares: 0, targetNav: 0, holdDays: '-', reason: `%B=${currentPctB.toFixed(0)} RSI=${tech.rsi14.toFixed(0)}，无明确波段机会`, grid: { buyLevel: r4(nav * (1 - gridStep * 1.5 / 100)), sellLevel: r4(nav * (1 + gridStep * 1.5 / 100)), spread: gridStep * 3 } });
+  }
+
+  return {
+    suitable: suitability >= 3, suitability, suitReasons, fundName: fund.name, nav,
+    volatility: Math.round(vol20 * 10) / 10, avgDailyMove: Math.round(avgDailyMove * 100) / 100, atrPct: Math.round(atrPct * 100) / 100,
+    position: { holdingShares: r4(holdingShares), costNav: r4(costNav), gainPct: Math.round(gainPct * 100) / 100, baseShares: r4(holdingShares * basePct / 100), swingShares, swingValue, basePct },
+    technical: { percentB: Math.round(currentPctB), rsi14: Math.round(tech.rsi14), trend: tech.trend, support: tech.support, resistance: tech.resistance },
+    gridStep, signals,
+    holdingWarning: null, recentBuys: [],
+  };
+}
 
 /** Full strategy analysis for a fund (mirrors GET /strategy/funds/:id) */
 export async function getFullStrategy(fundId: number | string, realtimeNav?: number) {
