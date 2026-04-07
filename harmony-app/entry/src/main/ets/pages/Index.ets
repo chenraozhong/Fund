@@ -82,6 +82,15 @@ struct Index {
     this.bridge.webController = this.controller;
   }
 
+  // 拦截系统返回手势/按键：WebView有历史记录时页面内后退，否则退出App
+  onBackPress(): boolean {
+    if (this.controller.accessBackward()) {
+      this.controller.backward();
+      return true;  // 已处理，不退出App
+    }
+    return false;  // 无历史记录，退出App
+  }
+
   build() {
     Column() {
       Web({ src: 'https://local.app/index.html', controller: this.controller })
