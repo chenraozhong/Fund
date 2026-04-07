@@ -1721,7 +1721,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   }
 
   // === E. 基础金额 ===
-  const rawBase = Math.max(Math.round(totalCost * 0.08 / 100) * 100, 500);
+  const rawBase = Math.max(Math.round(totalCost * 0.03) * 1, 500);  // 持仓成本的3%，最低500元
   const maxSingleAmount = Math.round(Math.max(totalCost, marketValue) * 0.15);
 
   // === E2. 交易费用模型（自动获取真实费率）===
@@ -2061,6 +2061,15 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
   if (action === 'buy' && basePositionPct >= 100 && holdingShares > 0) {
     action = 'hold'; opShares = 0; opAmount = 0;
     reasoning.push(`[警告] 底仓100%，买入后无法卖出，请先调低底仓比例`);
+  }
+  // [Fix] 金额过小不操作（<200元没有实际意义，手续费占比过高）
+  if (action === 'buy' && opAmount > 0 && opAmount < 200) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[跳过] 计算金额过小(<¥200)，等待更强信号`);
+  }
+  if (action === 'sell' && opAmount > 0 && opAmount < 100) {
+    action = 'hold'; opShares = 0; opAmount = 0;
+    reasoning.push(`[跳过] 卖出金额过小(<¥100)，暂不操作`);
   }
 
   // [A股修正+v7] 7天赎回惩罚检查：紧急止损可覆盖赎回保护
