@@ -62,6 +62,118 @@ async function callAI(prompt: string): Promise<string> {
   return JSON.stringify(data);
 }
 
+/** 调用AI识别图片内容 */
+async function callAIWithImage(prompt: string, imageBase64: string, mediaType: string = 'image/png'): Promise<string> {
+  const url = `${AI_BASE_URL}/v1/messages`;
+
+  const body = {
+    model: AI_MODEL,
+    max_tokens: 2000,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+        { type: 'text', text: prompt },
+      ],
+    }],
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+      'x-api-key': AI_KEY,
+      'Authorization': `Bearer ${AI_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`AI API error: ${response.status} ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await response.json() as any;
+  if (data.content && Array.isArray(data.content)) {
+    return data.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
+  }
+  return data.text || JSON.stringify(data);
+}
+
+/** 识别支付宝/天天基金交易截图 */
+router.post('/recognize-trades', async (req: Request, res: Response) => {
+  try {
+    const { image } = req.body;  // base64 encoded image
+    if (!image) { res.status(400).json({ error: '请上传截图' }); return; }
+    if (!AI_KEY) { res.status(503).json({ error: 'AI服务未配置' }); return; }
+
+    // 去掉data:image/xxx;base64,前缀
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
+    const mediaType = image.startsWith('data:image/jpeg') ? 'image/jpeg' : 'image/png';
+
+    const prompt = `请识别这张基金交易截图中的交易记录。提取每笔交易的以下信息，以JSON数组格式返回：
+
+[
+  {
+    "fund_name": "基金名称",
+    "fund_code": "基金代码(6位数字，如果能识别到)",
+    "type": "buy或sell或dividend",
+    "amount": 金额(数字),
+    "shares": 份额(数字，如果能识别到),
+    "nav": 净值(数字，如果能识别到),
+    "date": "日期(YYYY-MM-DD格式)",
+    "status": "交易状态(确认/处理中/待确认等)"
+  }
+]
+
+注意：
+- type只能是buy(买入/申购)、sell(卖出/赎回)、dividend(分红)
+- 金额和份额提取数字即可，去掉¥和份等单位
+- 如果是赎回，amount是赎回到账金额
+- 日期格式统一为YYYY-MM-DD
+- 只返回JSON数组，不要其他文字`;
+
+    const aiResult = await callAIWithImage(prompt, base64Data, mediaType);
+
+    // 尝试解析JSON
+    let trades: any[] = [];
+    try {
+      // 提取JSON部分（AI可能返回带markdown代码块的格式）
+      const jsonMatch = aiResult.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        trades = JSON.parse(jsonMatch[0]);
+      }
+    } catch {
+      // 解析失败返回原始文本
+      res.json({ success: true, trades: [], raw: aiResult, message: '识别完成但JSON解析失败，请查看原始结果' });
+      return;
+    }
+
+    // 匹配系统中已有的基金
+    for (const t of trades) {
+      if (t.fund_code) {
+        const existing = db.prepare('SELECT id, name FROM funds WHERE code = ?').get(t.fund_code) as any;
+        if (existing) {
+          t.matched_fund_id = existing.id;
+          t.matched_fund_name = existing.name;
+        }
+      } else if (t.fund_name) {
+        const existing = db.prepare('SELECT id, name, code FROM funds WHERE name LIKE ?').get(`%${t.fund_name.slice(0, 6)}%`) as any;
+        if (existing) {
+          t.matched_fund_id = existing.id;
+          t.matched_fund_name = existing.name;
+          t.fund_code = existing.code;
+        }
+      }
+    }
+
+    res.json({ success: true, trades, raw: aiResult });
+  } catch (err: any) {
+    res.status(500).json({ error: '识别失败: ' + err.message });
+  }
+});
+
 router.get('/funds/:id/research', async (req: Request, res: Response) => {
   const { id } = req.params;
 

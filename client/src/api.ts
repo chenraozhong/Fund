@@ -526,6 +526,10 @@ export const api = {
 
   getBandTrade: (id: number, nav: number) => request<any>(`/strategy/funds/${id}/band-trade?nav=${nav}`),
   getPortfolioAdvice: () => request<any>('/strategy/portfolio-advice'),
+  recognizeTrades: (imageBase64: string) =>
+    request<{ success: boolean; trades: any[]; raw?: string; message?: string }>('/ai/recognize-trades', {
+      method: 'POST', body: JSON.stringify({ image: imageBase64 }),
+    }),
 
   importPreview: (text: string) =>
     request<{ funds: ImportPreview[] }>('/import/preview', { method: 'POST', body: JSON.stringify({ text }) }),

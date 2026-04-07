@@ -57,6 +57,45 @@ export default function Transactions() {
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [analysisDate, setAnalysisDate] = useState(new Date().toISOString().slice(0, 10))
   const [activeTab, setActiveTab] = useState<TabKey>('list')
+  const [ocrLoading, setOcrLoading] = useState(false)
+  const [ocrResult, setOcrResult] = useState<any>(null)
+
+  const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setOcrLoading(true); setOcrResult(null)
+    try {
+      const reader = new FileReader()
+      reader.onload = async () => {
+        try {
+          const base64 = reader.result as string
+          const result = await api.recognizeTrades(base64)
+          setOcrResult(result)
+        } catch (err: any) {
+          setOcrResult({ success: false, trades: [], message: err.message })
+        } finally {
+          setOcrLoading(false)
+        }
+      }
+      reader.readAsDataURL(file)
+    } catch { setOcrLoading(false) }
+    e.target.value = '' // 清空，允许重复选同一文件
+  }
+
+  const applyOcrTrade = (trade: any) => {
+    setForm({
+      fund_id: trade.matched_fund_id || 0,
+      date: trade.date || new Date().toISOString().slice(0, 10),
+      type: trade.type || 'buy',
+      asset: trade.fund_name || '',
+      shares: trade.shares || (trade.amount && trade.nav ? Math.round(trade.amount / trade.nav * 100) / 100 : 0),
+      price: trade.nav || 0,
+      notes: `截图识别导入`,
+      inputMode: 'amount' as const,
+    })
+    setShowForm(true)
+    setEditId(null)
+  }
 
   const autoFetchNav = async (fundId: number, date: string, type: string) => {
     if (type === 'dividend' || !fundId || !date) { setNavHint(''); return }
@@ -181,6 +220,11 @@ export default function Transactions() {
           </div>
         </div>
         <div className="flex gap-2">
+          <label className={`inline-flex items-center gap-1.5 px-3 py-2 ${ocrLoading ? 'bg-gray-400' : 'bg-purple-600 hover:bg-purple-700'} text-white rounded-lg text-sm font-medium shadow-sm transition-colors cursor-pointer`}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+            {ocrLoading ? '识别中...' : '截图识别'}
+            <input type="file" accept="image/*" onChange={handleOCR} className="hidden" disabled={ocrLoading} />
+          </label>
           <button onClick={() => { setShowBatch(true); setBatchRows([emptyBatchRow(), emptyBatchRow(), emptyBatchRow()]); setBatchError(''); setActiveTab('list') }}
             className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium shadow-sm transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
@@ -226,6 +270,59 @@ export default function Transactions() {
           </div>
 
           {/* Batch Form */}
+          {/* 截图识别结果 */}
+          {ocrResult && (
+            <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-purple-700">
+                  截图识别结果 — {ocrResult.trades?.length || 0}笔交易
+                </h3>
+                <button onClick={() => setOcrResult(null)} className="text-purple-400 hover:text-purple-600">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+              {ocrResult.trades?.length > 0 ? (
+                <div className="space-y-2">
+                  {ocrResult.trades.map((t: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between bg-white rounded-lg p-3 border border-purple-100">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                            t.type === 'buy' ? 'bg-emerald-100 text-emerald-700' :
+                            t.type === 'sell' ? 'bg-red-100 text-red-700' :
+                            'bg-amber-100 text-amber-700'
+                          }`}>{t.type === 'buy' ? '买入' : t.type === 'sell' ? '卖出' : '分红'}</span>
+                          <span className="text-sm font-medium text-gray-900 truncate">{t.fund_name}</span>
+                          {t.fund_code && <span className="text-xs text-gray-400">{t.fund_code}</span>}
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                          {t.date && <span>{t.date}</span>}
+                          {t.amount > 0 && <span className="font-medium">¥{t.amount.toLocaleString()}</span>}
+                          {t.shares > 0 && <span>{t.shares}份</span>}
+                          {t.nav > 0 && <span>净值{t.nav}</span>}
+                          {t.matched_fund_name && <span className="text-purple-600">已匹配: {t.matched_fund_name}</span>}
+                          {!t.matched_fund_id && <span className="text-amber-500">未匹配到系统基金</span>}
+                        </div>
+                      </div>
+                      <button onClick={() => applyOcrTrade(t)}
+                        className="shrink-0 ml-2 px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700">
+                        录入
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-purple-600">{ocrResult.message || '未识别到交易记录'}</p>
+              )}
+              {ocrResult.raw && !ocrResult.trades?.length && (
+                <details className="text-xs text-gray-500">
+                  <summary className="cursor-pointer">查看AI原始返回</summary>
+                  <pre className="mt-1 whitespace-pre-wrap bg-white p-2 rounded border">{ocrResult.raw}</pre>
+                </details>
+              )}
+            </div>
+          )}
+
           {showBatch && (
             <div className="bg-white rounded-xl border border-emerald-200 shadow-sm p-5 space-y-3 ring-1 ring-emerald-100">
               <div className="flex items-center justify-between">
