@@ -101,40 +101,56 @@ async function callAIWithImage(prompt: string, imageBase64: string, mediaType: s
   return data.text || JSON.stringify(data);
 }
 
-/** 识别支付宝/天天基金交易截图 */
+/** 识别交易：支持截图(image)或粘贴文字(text) */
 router.post('/recognize-trades', async (req: Request, res: Response) => {
   try {
-    const { image } = req.body;  // base64 encoded image
-    if (!image) { res.status(400).json({ error: '请上传截图' }); return; }
+    const { image, text } = req.body;
+    if (!image && !text) { res.status(400).json({ error: '请上传截图或粘贴交易文字' }); return; }
     if (!AI_KEY) { res.status(503).json({ error: 'AI服务未配置' }); return; }
 
-    // 去掉data:image/xxx;base64,前缀
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-    const mediaType = image.startsWith('data:image/jpeg') ? 'image/jpeg' : 'image/png';
+    let aiResult: string;
 
-    const prompt = `请识别这张基金交易截图中的交易记录。提取每笔交易的以下信息，以JSON数组格式返回：
+    if (text) {
+      // 文字模式：用户粘贴了支付宝交易文字
+      aiResult = await callAI(`以下是从支付宝复制的基金交易记录文字，请提取所有交易信息。${prompt}\n\n原始文字：\n${text}`);
+    } else {
+      // 图片模式
+      const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
+      const mediaType = image.startsWith('data:image/jpeg') ? 'image/jpeg' : 'image/png';
 
+    const prompt = `这是一张支付宝基金交易记录的截图。请仔细识别每一笔交易。
+
+支付宝交易记录的典型格式：
+- 每笔交易通常包含：基金名称、交易类型（买入/卖出/赎回/分红/转入/转出）、金额、日期、状态
+- 买入/申购显示为负数金额（如 -1,000.00）表示支出
+- 卖出/赎回显示为正数金额（如 +1,000.00）表示收入
+- 分红到账也显示正数
+- 日期格式可能是 MM-DD 或 YYYY-MM-DD 或 "昨天"/"今天"等
+
+请提取所有交易，返回JSON数组。每笔交易格式：
 [
   {
-    "fund_name": "基金名称",
-    "fund_code": "基金代码(6位数字，如果能识别到)",
-    "type": "buy或sell或dividend",
-    "amount": 金额(数字),
-    "shares": 份额(数字，如果能识别到),
-    "nav": 净值(数字，如果能识别到),
-    "date": "日期(YYYY-MM-DD格式)",
-    "status": "交易状态(确认/处理中/待确认等)"
+    "fund_name": "完整基金名称",
+    "fund_code": "6位数字代码(如果截图中有显示)",
+    "type": "buy/sell/dividend",
+    "amount": 金额的绝对值(纯数字,不含符号和逗号),
+    "shares": 份额(纯数字,如果有显示),
+    "nav": 净值(纯数字,如果有显示),
+    "date": "YYYY-MM-DD(如果只有月日请补充2026年)",
+    "status": "状态文字"
   }
 ]
 
-注意：
-- type只能是buy(买入/申购)、sell(卖出/赎回)、dividend(分红)
-- 金额和份额提取数字即可，去掉¥和份等单位
-- 如果是赎回，amount是赎回到账金额
-- 日期格式统一为YYYY-MM-DD
-- 只返回JSON数组，不要其他文字`;
+重要规则：
+- 支出/买入/申购/转入 → type="buy"
+- 收入/卖出/赎回/转出 → type="sell"
+- 分红/红利再投 → type="dividend"
+- 金额统一取绝对值（去掉正负号）
+- 如果截图中有多笔交易，全部提取
+- 只返回JSON数组，不要任何解释文字`;
 
-    const aiResult = await callAIWithImage(prompt, base64Data, mediaType);
+      aiResult = await callAIWithImage(prompt, base64Data, mediaType);
+    }
 
     // 尝试解析JSON
     let trades: any[] = [];

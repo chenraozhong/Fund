@@ -59,6 +59,8 @@ export default function Transactions() {
   const [activeTab, setActiveTab] = useState<TabKey>('list')
   const [ocrLoading, setOcrLoading] = useState(false)
   const [ocrResult, setOcrResult] = useState<any>(null)
+  const [showOcrText, setShowOcrText] = useState(false)
+  const [ocrText, setOcrText] = useState('')
 
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -80,6 +82,18 @@ export default function Transactions() {
       reader.readAsDataURL(file)
     } catch { setOcrLoading(false) }
     e.target.value = '' // 清空，允许重复选同一文件
+  }
+
+  const handleOCRText = async () => {
+    if (!ocrText.trim()) return
+    setOcrLoading(true); setOcrResult(null)
+    try {
+      const result = await api.recognizeTrades('', ocrText.trim())
+      setOcrResult(result)
+      setShowOcrText(false)
+    } catch (err: any) {
+      setOcrResult({ success: false, trades: [], message: err.message })
+    } finally { setOcrLoading(false) }
   }
 
   const applyOcrTrade = (trade: any) => {
@@ -223,8 +237,13 @@ export default function Transactions() {
           <label className={`inline-flex items-center gap-1.5 px-3 py-2 ${ocrLoading ? 'bg-gray-400' : 'bg-purple-600 hover:bg-purple-700'} text-white rounded-lg text-sm font-medium shadow-sm transition-colors cursor-pointer`}>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
             {ocrLoading ? '识别中...' : '截图识别'}
-            <input type="file" accept="image/*" onChange={handleOCR} className="hidden" disabled={ocrLoading} />
+            <input type="file" accept="image/*" capture="environment" onChange={handleOCR} className="hidden" disabled={ocrLoading} />
           </label>
+          <button onClick={() => setShowOcrText(!showOcrText)} disabled={ocrLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 text-sm font-medium transition-colors disabled:opacity-50">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            粘贴文字
+          </button>
           <button onClick={() => { setShowBatch(true); setBatchRows([emptyBatchRow(), emptyBatchRow(), emptyBatchRow()]); setBatchError(''); setActiveTab('list') }}
             className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium shadow-sm transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
@@ -270,6 +289,25 @@ export default function Transactions() {
           </div>
 
           {/* Batch Form */}
+          {/* 粘贴文字识别 */}
+          {showOcrText && (
+            <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-purple-700">粘贴支付宝交易记录文字</h3>
+              <p className="text-xs text-gray-500">在支付宝交易记录页面长按复制文字，粘贴到下方</p>
+              <textarea value={ocrText} onChange={e => setOcrText(e.target.value)}
+                className="w-full h-32 border border-purple-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                placeholder={'例如：\n买入 广发中证红利ETF联接C\n金额 ¥1,000.00\n2026-04-07 确认成功'} />
+              <div className="flex gap-2">
+                <button onClick={handleOCRText} disabled={ocrLoading || !ocrText.trim()}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium disabled:opacity-50">
+                  {ocrLoading ? '识别中...' : '识别交易'}
+                </button>
+                <button onClick={() => { setShowOcrText(false); setOcrText('') }}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm">取消</button>
+              </div>
+            </div>
+          )}
+
           {/* 截图识别结果 */}
           {ocrResult && (
             <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
