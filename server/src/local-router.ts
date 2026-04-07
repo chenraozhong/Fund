@@ -184,14 +184,17 @@ register('GET', '/nav/:code/history', (p, q) => nav.getNavHistory(p.code, q));
 
 // --- Strategy (shares same logic as PC — any fix auto-syncs) ---
 import {
-  getAvailableModels, DEFAULT_MODEL, computeDecision, logDecision,
+  getAvailableModels, DEFAULT_MODEL, computeDecision, logDecision, autoSelectModel,
   getFullStrategy, getBatchDecisions, getBatchForecasts,
   getForecastReviewSummary, getDecisionLogs, getForecastHistory,
   autoReviewForecasts, FORECAST_MODEL_VERSION, DECISION_MODEL_VERSION,
   getSingleForecast,
 } from './routes/strategy';
 
-register('GET', '/strategy/models', () => ({ models: getAvailableModels(), default: DEFAULT_MODEL }));
+register('GET', '/strategy/models', (_, q) => {
+  const recommended = q.fundName ? autoSelectModel(q.fundName) : DEFAULT_MODEL;
+  return { models: getAvailableModels(), default: recommended };
+});
 register('GET', '/strategy/funds/:id', (p, q) => getFullStrategy(Number(p.id), q.nav ? parseFloat(q.nav) : undefined));
 register('GET', '/strategy/funds/:id/decision', async (p, q) => {
   const result = await computeDecision(Number(p.id), q.nav ? parseFloat(q.nav) : 0, q.model || undefined);

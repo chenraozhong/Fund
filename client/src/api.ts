@@ -494,7 +494,7 @@ export const api = {
     error?: string;
     generated_at?: string;
   }>(`/ai/funds/${id}/research`),
-  getModels: () => request<{ models: { id: string; label: string; description: string }[]; default: string }>('/strategy/models'),
+  getModels: (fundName?: string) => request<{ models: { id: string; label: string; description: string }[]; default: string }>(`/strategy/models${fundName ? `?fundName=${encodeURIComponent(fundName)}` : ''}`),
   getDecision: (id: number, nav: number, model?: string) => request<{
     nav: number; action: 'buy' | 'sell' | 'hold'; shares: number; amount: number;
     confidence: number; urgency: 'high' | 'medium' | 'low'; summary: string; compositeScore: number;

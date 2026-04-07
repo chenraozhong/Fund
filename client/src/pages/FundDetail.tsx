@@ -262,8 +262,14 @@ export default function FundDetail() {
   }
   useEffect(() => { load() }, [fundId])
   useEffect(() => {
-    api.getModels().then(r => { setModelList(r.models); if (!selectedModel) setSelectedModel(r.default) }).catch(() => {})
+    api.getModels().then(r => { setModelList(r.models) }).catch(() => {})
   }, [])
+  // 基金加载后根据名称获取推荐模型
+  useEffect(() => {
+    if (data?.fund?.name && !selectedModel) {
+      api.getModels(data.fund.name).then(r => { setSelectedModel(r.default) }).catch(() => {})
+    }
+  }, [data?.fund?.name])
 
   const fetchQuickAdvice = async () => {
     const nav = parseFloat(quickNav)
@@ -1170,7 +1176,7 @@ export default function FundDetail() {
             }}
               className="px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none">
               {modelList.map(m => (
-                <option key={m.id} value={m.id}>{m.label}</option>
+                <option key={m.id} value={m.id}>{m.label}{decision?.modelVersion?.decision === m.id ? ' ✓' : ''}</option>
               ))}
             </select>
           )}

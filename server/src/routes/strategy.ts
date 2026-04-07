@@ -2553,8 +2553,10 @@ function logDecision(fundId: number, decision: any) {
 
 // 单基金决策端点
 // 获取可用模型版本列表
-router.get('/models', (_req: Request, res: Response) => {
-  res.json({ models: getAvailableModels(), default: DEFAULT_MODEL });
+router.get('/models', (req: Request, res: Response) => {
+  const fundName = req.query.fundName as string || '';
+  const recommended = fundName ? autoSelectModel(fundName) : DEFAULT_MODEL;
+  res.json({ models: getAvailableModels(), default: recommended });
 });
 
 router.get('/funds/:id/decision', async (req: Request, res: Response) => {
