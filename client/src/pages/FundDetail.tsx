@@ -41,7 +41,7 @@ const typeConfig = {
   dividend: { label: '分红',  bg: 'bg-amber-50',    text: 'text-amber-700',   border: 'border-amber-200',   icon: '$' },
 }
 
-const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '', inputMode: 'amount' as 'shares' | 'amount', inputValue: 0 }
+const emptyForm = { fund_id: 0, date: '', type: 'buy' as const, asset: '', shares: 0, price: 0, notes: '', inputMode: 'amount' as 'shares' | 'amount', inputValue: 0, affect_gain: true }
 
 function CostImpactPanel({ transactions, txDates, holdingShares, totalCost, costNav, snapshots }: {
   transactions: Transaction[]; txDates: string[]; holdingShares: number; totalCost: number; costNav: number; snapshots: DailySnapshot[]
@@ -534,10 +534,11 @@ export default function FundDetail() {
     }
 
     try {
-      const payload = { fund_id: fundId, date: form.date, type: form.type, asset, shares: submitShares, price: submitPrice, notes: form.notes }
+      const payload: any = { fund_id: fundId, date: form.date, type: form.type, asset, shares: submitShares, price: submitPrice, notes: form.notes }
       if (editId) {
         await api.updateTransaction(editId, payload)
       } else {
+        payload.affect_gain = form.affect_gain
         await api.createTransaction(payload)
       }
       setShowForm(false)
@@ -582,11 +583,17 @@ export default function FundDetail() {
     if (buys.length === 0 || sells.length === 0) return null
 
     let totalBuyShares = 0, totalBuyCost = 0
-    for (const tx of buys) { totalBuyShares += tx.shares; totalBuyCost += tx.shares * tx.price }
+    for (const tx of buys) {
+      const avail = tx.shares - (tx.paired_shares || 0)
+      if (avail > 0.001) { totalBuyShares += avail; totalBuyCost += avail * tx.price }
+    }
     const avgBuyPrice = totalBuyShares > 0 ? totalBuyCost / totalBuyShares : 0
 
     let totalSellShares = 0, totalSellRevenue = 0
-    for (const tx of sells) { totalSellShares += tx.shares; totalSellRevenue += tx.shares * tx.price }
+    for (const tx of sells) {
+      const avail = tx.shares - (tx.paired_shares || 0)
+      if (avail > 0.001) { totalSellShares += avail; totalSellRevenue += avail * tx.price }
+    }
     const avgSellPrice = totalSellShares > 0 ? totalSellRevenue / totalSellShares : 0
 
     const pairedShares = Math.min(totalBuyShares, totalSellShares)
@@ -2009,6 +2016,13 @@ export default function FundDetail() {
               <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="添加备注..." className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
             </div>
           </div>
+          {!editId && (
+            <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+              <input type="checkbox" checked={form.affect_gain} onChange={e => setForm({ ...form, affect_gain: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+              <span className="text-sm text-gray-600">影响持仓收益</span>
+              <span className="text-xs text-gray-400">{form.affect_gain ? '（份额会变化）' : '（自动调整历史持仓, 份额不变）'}</span>
+            </label>
+          )}
           <div className="flex gap-3 pt-2">
             <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">
               {editId ? '更新' : '添加'}交易
@@ -2243,13 +2257,16 @@ export default function FundDetail() {
             const total = tx.type === 'dividend' ? tx.price : tx.shares * tx.price
             const isSelected = selected.has(tx.id)
 
+            const fullyPaired = tx.type !== 'dividend' && (tx.paired_shares || 0) >= tx.shares - 0.001 && tx.shares > 0
+
             return (
-              <div key={tx.id} className={`px-5 py-3 flex items-center gap-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50/50' : ''}`}>
+              <div key={tx.id} className={`px-5 py-3 flex items-center gap-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50/50' : ''} ${fullyPaired ? 'opacity-50' : ''}`}>
                 <input
                   type="checkbox"
                   checked={isSelected}
+                  disabled={fullyPaired}
                   onChange={() => toggleSelect(tx.id)}
-                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0 disabled:opacity-30"
                 />
                 <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.bg} ${cfg.text} ${cfg.border} shrink-0`}>
                   {cfg.icon} {cfg.label}
