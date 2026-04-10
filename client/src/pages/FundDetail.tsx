@@ -305,7 +305,7 @@ export default function FundDetail() {
 
   const totalValue = positions.reduce((s, p) => s + p.current_value, 0)
   const totalCost = positions.reduce((s, p) => s + p.total_cost, 0)
-  const totalGain = totalValue - totalCost
+  const totalGain = fund.cumulative_gain ?? (totalValue - totalCost)
 
   // Group transactions by asset
   const txByAsset: Record<string, Transaction[]> = {}
@@ -698,15 +698,24 @@ export default function FundDetail() {
         const currentNav = officialIsToday ? officialNav : estNav;
         const isEstimate = !officialIsToday && estNav > 0;
 
-        // 日初持仓 = 当前持仓 + 今日卖出 - 今日买入
-        let todayBought = 0, todaySold = 0;
-        for (const tx of transactions) {
-          if (tx.date === todayStr) {
-            if (tx.type === 'buy') todayBought += tx.shares;
-            else if (tx.type === 'sell') todaySold += tx.shares;
+        // 日初持仓 = 昨日快照的holding_shares(最可靠, 不受配对/当日交易影响)
+        const lastSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
+        const prevSnapshotDate = lastSnapshot?.date || '';
+        // 快照是昨天或更早的 → 用快照份额; 快照是今天的 → 需要反推
+        let startOfDayShares = holdingShares;
+        if (lastSnapshot && prevSnapshotDate < todayStr) {
+          startOfDayShares = lastSnapshot.holding_shares;
+        } else {
+          // fallback: 从交易反推
+          let todayBought = 0, todaySold = 0;
+          for (const tx of transactions) {
+            if (tx.date === todayStr) {
+              if (tx.type === 'buy') todayBought += tx.shares;
+              else if (tx.type === 'sell') todaySold += tx.shares;
+            }
           }
+          startOfDayShares = holdingShares + todaySold - todayBought;
         }
-        const startOfDayShares = holdingShares + todaySold - todayBought;
 
         let dailyGain: number | null = null;
         let dailyPct: number | null = null;
@@ -1003,6 +1012,39 @@ export default function FundDetail() {
               </div>
             ))}
           </div>
+
+          {/* 未配对交易建议 */}
+          {bandTrade.unpairedAdvice?.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-gray-500 mb-2">未配对交易建议</p>
+              <div className="space-y-1.5">
+                {bandTrade.unpairedAdvice.map((adv: any, i: number) => (
+                  <div key={i} className={`rounded-lg px-3 py-2 ${
+                    adv.direction === 'sell' ? 'bg-red-50 border border-red-200' : 'bg-emerald-50 border border-emerald-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold ${
+                        adv.direction === 'sell' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        {adv.direction === 'sell' ? '建议卖出' : '建议买入'}
+                      </span>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className={adv.direction === 'sell' ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold'}>
+                          {adv.diffPct > 0 ? '+' : ''}{adv.diffPct.toFixed(2)}%
+                        </span>
+                        <span className={`font-bold ${adv.estProfit >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {adv.estProfit >= 0 ? `+¥${adv.estProfit.toFixed(2)}` : `¥${adv.estProfit.toFixed(2)}`}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-gray-600 leading-relaxed">
+                      {adv.shares.toFixed(2)}份 · {adv.reason}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {bandTrade.technical && (
             <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-400">
@@ -2057,9 +2099,10 @@ export default function FundDetail() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-gray-400">均价差</span>
+                  <span className="text-xs text-gray-400">净值差</span>
                   <span className={`text-xs font-medium ${pairInfo.priceDiff >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {pairInfo.priceDiff >= 0 ? '+' : ''}{pairInfo.priceDiff.toFixed(4)}/份
+                    ({pairInfo.avgBuyPrice > 0 ? `${((pairInfo.priceDiff / pairInfo.avgBuyPrice) * 100) >= 0 ? '+' : ''}${((pairInfo.priceDiff / pairInfo.avgBuyPrice) * 100).toFixed(2)}%` : '-'})
                   </span>
                 </div>
                 {pairInfo.remainder > 0.01 && (
@@ -2110,9 +2153,19 @@ export default function FundDetail() {
                     <span className="text-xs text-gray-400">{fmtNum(t.paired_shares, 2)} 份</span>
                     <span className="text-xs text-gray-400">{formatDate(t.buy_date)} → {formatDate(t.sell_date)}</span>
                     <div className="flex-1" />
-                    <span className={`text-base font-bold ${t.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {t.profit >= 0 ? '+' : ''}{fmt(t.profit)}
-                    </span>
+                    <div className="text-right">
+                      <span className={`text-base font-bold ${t.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {t.profit >= 0 ? '+' : ''}{fmt(t.profit)}
+                      </span>
+                      {(() => {
+                        const pct = t.profit_pct || (t.buy_price > 0 ? ((t.sell_price - t.buy_price) / t.buy_price * 100) : 0)
+                        return (
+                          <div className={`text-xs ${pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                            {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                          </div>
+                        )
+                      })()}
+                    </div>
                   </div>
                 </div>
                 {isExp && (
@@ -2132,9 +2185,15 @@ export default function FundDetail() {
                       </div>
                     </div>
                     <div className="flex items-center justify-between text-xs pt-1">
-                      <span className="text-gray-400">
-                        净值差 {(t.sell_price - t.buy_price) >= 0 ? '+' : ''}{(t.sell_price - t.buy_price).toFixed(4)}/份
-                      </span>
+                      {(() => {
+                        const diff = t.nav_diff || (t.sell_price - t.buy_price)
+                        const pct = t.profit_pct || (t.buy_price > 0 ? ((t.sell_price - t.buy_price) / t.buy_price * 100) : 0)
+                        return (
+                          <span className={diff >= 0 ? 'text-green-600' : 'text-red-600'}>
+                            净值差 {diff >= 0 ? '+' : ''}{diff.toFixed(4)}/份 ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)
+                          </span>
+                        )
+                      })()}
                       <button
                         onClick={(e) => { e.stopPropagation(); handleUnpair(t.id) }}
                         className="px-2.5 py-1 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
@@ -2202,6 +2261,16 @@ export default function FundDetail() {
                       ? <>{tx.shares} 份 @ {fmtNav(tx.price)}</>
                       : <>分红</>
                     }
+                    {tx.type !== 'dividend' && tx.paired_shares > 0 && (
+                      tx.paired_shares >= tx.shares - 0.001
+                        ? <span className="ml-1.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-400 text-[10px]">已全部配对</span>
+                        : <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 text-[10px]">
+                            未配对{(tx.shares - tx.paired_shares).toFixed(2)}份
+                          </span>
+                    )}
+                    {tx.type !== 'dividend' && (!tx.paired_shares || tx.paired_shares === 0) && (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded bg-blue-50 text-blue-500 text-[10px]">未配对</span>
+                    )}
                     {tx.notes && <span className="ml-2 text-gray-400">&middot; {tx.notes}</span>}
                   </div>
                 </div>

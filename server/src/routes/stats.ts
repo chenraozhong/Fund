@@ -33,6 +33,10 @@ router.get('/cost-nav-changes', (_req: Request, res: Response) => {
   res.json(svc.getCostNavChanges());
 });
 
+router.get('/short-term-profit', (_req: Request, res: Response) => {
+  res.json(svc.getShortTermProfit());
+});
+
 // Re-export for backward compatibility (used by nav.ts)
 export { recordDailySnapshots } from '../services/stats.service';
 export default router;

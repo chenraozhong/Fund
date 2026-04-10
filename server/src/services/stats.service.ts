@@ -2,34 +2,31 @@ import db from '../db';
 
 export function getSummary() {
   const funds = db.prepare(`
-    SELECT f.id, f.market_nav,
+    SELECT f.id, f.market_nav, f.cumulative_gain,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
-        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy,
-      COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0) as total_sell,
-      COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
+        - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares
     FROM funds f
     LEFT JOIN transactions t ON t.fund_id = f.id
+    WHERE f.deleted_at IS NULL
     GROUP BY f.id
   `).all() as any[];
 
-  let totalValue = 0, totalCost = 0;
+  let totalValue = 0, totalGain = 0;
   for (const f of funds) {
-    const costBasis = f.total_buy - f.total_sell + f.total_dividend;
     const marketValue = f.market_nav > 0 && f.holding_shares > 0
-      ? f.holding_shares * f.market_nav : costBasis;
+      ? f.holding_shares * f.market_nav : 0;
     totalValue += marketValue;
-    totalCost += costBasis;
+    totalGain += (f.cumulative_gain || 0);
   }
 
   const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions').get() as any).count;
-  const gain = totalValue - totalCost;
 
   return {
     total_value: Math.round(totalValue * 100) / 100,
-    total_cost: Math.round(totalCost * 100) / 100,
-    gain: Math.round(gain * 100) / 100,
-    gain_pct: totalCost > 0 ? Math.round((gain / totalCost) * 10000) / 100 : 0,
+    total_cost: Math.round((totalValue - totalGain) * 100) / 100,
+    gain: Math.round(totalGain * 100) / 100,
+    gain_pct: totalValue > totalGain && totalGain !== 0
+      ? Math.round((totalGain / (totalValue - totalGain)) * 10000) / 100 : 0,
     fund_count: funds.length,
     tx_count: txCount,
   };
@@ -95,33 +92,83 @@ export function getAllocation() {
 export function recordDailySnapshots() {
   const today = new Date().toISOString().slice(0, 10);
   const funds = db.prepare(`
-    SELECT f.id, f.market_nav,
+    SELECT f.id, f.market_nav, f.cumulative_gain,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
         - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy,
-      COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0) as total_sell,
-      COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0) as total_buy_shares,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy
     FROM funds f
     LEFT JOIN transactions t ON t.fund_id = f.id
     WHERE f.deleted_at IS NULL
     GROUP BY f.id
   `).all() as any[];
 
+  // 计算每只基金今日交易的买卖份额(用于反推日初份额)
+  const todayTxs = db.prepare(`
+    SELECT fund_id,
+      COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) as today_bought,
+      COALESCE(SUM(CASE WHEN type = 'sell' THEN shares ELSE 0 END), 0) as today_sold
+    FROM transactions WHERE date = ? GROUP BY fund_id
+  `).all(today) as any[];
+  const todayMap = new Map<number, { bought: number; sold: number }>();
+  for (const t of todayTxs) todayMap.set(t.fund_id, { bought: t.today_bought, sold: t.today_sold });
+
+  // 获取昨日快照的NAV(用于净值差计算)
+  const prevSnaps = db.prepare(`
+    SELECT fund_id, market_nav FROM daily_snapshots
+    WHERE date = (SELECT MAX(date) FROM daily_snapshots WHERE date < ?)
+  `).all(today) as any[];
+  const prevNavMap = new Map<number, number>();
+  for (const s of prevSnaps) prevNavMap.set(s.fund_id, s.market_nav);
+
+  // 获取今日已有快照的daily_gain(用于幂等更新: 先减旧值再加新值)
+  const existingSnaps = db.prepare(`
+    SELECT fund_id, daily_gain FROM daily_snapshots WHERE date = ?
+  `).all(today) as any[];
+  const existingGainMap = new Map<number, number>();
+  for (const s of existingSnaps) existingGainMap.set(s.fund_id, s.daily_gain || 0);
+
   const insert = db.prepare(`
-    INSERT OR REPLACE INTO daily_snapshots (fund_id, date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO daily_snapshots (fund_id, date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct, daily_gain)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const updateFundGain = db.prepare(`UPDATE funds SET cumulative_gain = ? WHERE id = ?`);
+  const updatePrevSnapshot = db.prepare(`UPDATE daily_snapshots SET holding_shares = ? WHERE fund_id = ? AND date = (SELECT MAX(date) FROM daily_snapshots WHERE fund_id = ? AND date < ?)`);
 
   db.transaction(() => {
     for (const f of funds) {
       const holdingShares = f.holding_shares;
-      const totalCost = f.total_buy - f.total_sell + f.total_dividend;
       const mNav = f.market_nav || 0;
-      const marketValue = mNav > 0 && holdingShares > 0 ? holdingShares * mNav : totalCost;
-      const costNav = holdingShares > 0 && totalCost > 0 ? totalCost / holdingShares : 0;
-      const gain = marketValue - totalCost;
-      const gainPct = totalCost > 0 ? (gain / totalCost) * 100 : 0;
-      insert.run(f.id, today, holdingShares, Math.round(totalCost * 100) / 100, Math.round(marketValue * 100) / 100, Math.round(costNav * 10000) / 10000, mNav, Math.round(gain * 100) / 100, Math.round(gainPct * 100) / 100);
+      const marketValue = mNav > 0 && holdingShares > 0 ? holdingShares * mNav : 0;
+      const avgBuyPrice = f.total_buy_shares > 0 ? f.total_buy / f.total_buy_shares : 0;
+      const holdingCost = holdingShares > 0 ? holdingShares * avgBuyPrice : 0;
+      const costNav = holdingCost > 0 ? holdingCost / holdingShares : 0;
+
+      // 日初份额 = 当前持仓 - 今日买入 + 今日卖出 (从交易实时反推)
+      const todayTx = todayMap.get(f.id);
+      const startOfDayShares = holdingShares - (todayTx?.bought || 0) + (todayTx?.sold || 0);
+
+      const prevNav = prevNavMap.get(f.id) || 0;
+
+      let dailyGain = 0;
+      if (startOfDayShares > 0 && mNav > 0 && prevNav > 0) {
+        dailyGain = Math.round(startOfDayShares * (mNav - prevNav) * 100) / 100;
+      }
+
+      // 幂等更新累计收益: 减去旧的daily_gain, 加上新的daily_gain
+      const oldDailyGain = existingGainMap.get(f.id) ?? 0;
+      const cumulativeGain = Math.round(((f.cumulative_gain || 0) - oldDailyGain + dailyGain) * 100) / 100;
+      updateFundGain.run(cumulativeGain, f.id);
+
+      const gainPct = holdingCost > 0 ? ((marketValue - holdingCost) / holdingCost) * 100 : 0;
+
+      insert.run(f.id, today, holdingShares, Math.round(holdingCost * 100) / 100,
+        Math.round(marketValue * 100) / 100, Math.round(costNav * 10000) / 10000,
+        mNav, Math.round(cumulativeGain * 100) / 100, Math.round(gainPct * 100) / 100,
+        dailyGain);
+
+      // 同步更新昨日快照的holding_shares
+      updatePrevSnapshot.run(startOfDayShares, f.id, f.id, today);
     }
   })();
   return funds.length;
@@ -130,7 +177,7 @@ export function recordDailySnapshots() {
 export function getSnapshots(fundId: number | string, days?: number) {
   const limit = days || 90;
   const rows = db.prepare(`
-    SELECT date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct
+    SELECT date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct, daily_gain
     FROM daily_snapshots WHERE fund_id = ? ORDER BY date DESC LIMIT ?
   `).all(fundId, limit);
   return (rows as any[]).reverse();
@@ -144,6 +191,83 @@ export function getAllSnapshots() {
       SELECT fund_id, MAX(date) as max_date FROM daily_snapshots GROUP BY fund_id
     ) latest ON s.fund_id = latest.fund_id AND s.date = latest.max_date
   `).all();
+}
+
+/** 短线收益汇总（所有配对交易） */
+export function getShortTermProfit() {
+  const trades = db.prepare('SELECT * FROM trades ORDER BY sell_date DESC').all() as any[];
+
+  let totalProfit = 0, totalBuyCost = 0, winCount = 0, lossCount = 0;
+  const byFund: Record<number, { fund_id: number; asset: string; profit: number; count: number; buyCost: number }> = {};
+
+  for (const t of trades) {
+    const buyCost = t.paired_shares * t.buy_price;
+    totalProfit += t.profit;
+    totalBuyCost += buyCost;
+    if (t.profit >= 0) winCount++; else lossCount++;
+
+    if (!byFund[t.fund_id]) {
+      byFund[t.fund_id] = { fund_id: t.fund_id, asset: t.asset, profit: 0, count: 0, buyCost: 0 };
+    }
+    byFund[t.fund_id].profit += t.profit;
+    byFund[t.fund_id].count += 1;
+    byFund[t.fund_id].buyCost += buyCost;
+  }
+
+  const fundBreakdown = Object.values(byFund)
+    .map(f => ({
+      ...f,
+      profit: Math.round(f.profit * 100) / 100,
+      profitPct: f.buyCost > 0 ? Math.round((f.profit / f.buyCost) * 10000) / 100 : 0,
+    }))
+    .sort((a, b) => b.profit - a.profit);
+
+  // 按月统计
+  const byMonth: Record<string, { month: string; profit: number; buyCost: number; count: number; winCount: number; lossCount: number }> = {};
+  for (const t of trades) {
+    const month = (t.sell_date || t.buy_date).slice(0, 7); // YYYY-MM
+    if (!byMonth[month]) {
+      byMonth[month] = { month, profit: 0, buyCost: 0, count: 0, winCount: 0, lossCount: 0 };
+    }
+    const buyCost = t.paired_shares * t.buy_price;
+    byMonth[month].profit += t.profit;
+    byMonth[month].buyCost += buyCost;
+    byMonth[month].count += 1;
+    if (t.profit >= 0) byMonth[month].winCount++; else byMonth[month].lossCount++;
+  }
+  const monthlyBreakdown = Object.values(byMonth)
+    .map(m => ({
+      ...m,
+      profit: Math.round(m.profit * 100) / 100,
+      profitPct: m.buyCost > 0 ? Math.round((m.profit / m.buyCost) * 10000) / 100 : 0,
+      buyCost: Math.round(m.buyCost * 100) / 100,
+    }))
+    .sort((a, b) => b.month.localeCompare(a.month));
+
+  return {
+    totalProfit: Math.round(totalProfit * 100) / 100,
+    totalProfitPct: totalBuyCost > 0 ? Math.round((totalProfit / totalBuyCost) * 10000) / 100 : 0,
+    totalBuyCost: Math.round(totalBuyCost * 100) / 100,
+    tradeCount: trades.length,
+    winCount,
+    lossCount,
+    winRate: trades.length > 0 ? Math.round((winCount / trades.length) * 10000) / 100 : 0,
+    fundBreakdown,
+    monthlyBreakdown,
+    recentTrades: trades.slice(0, 10).map(t => ({
+      id: t.id,
+      fund_id: t.fund_id,
+      asset: t.asset,
+      buy_date: t.buy_date,
+      sell_date: t.sell_date,
+      paired_shares: t.paired_shares,
+      buy_price: t.buy_price,
+      sell_price: t.sell_price,
+      profit: t.profit,
+      navDiff: Math.round((t.sell_price - t.buy_price) * 10000) / 10000,
+      profitPct: t.buy_price > 0 ? Math.round(((t.sell_price - t.buy_price) / t.buy_price) * 10000) / 100 : 0,
+    })),
+  };
 }
 
 /** Get cost NAV change summary for all funds (latest vs previous snapshot) */

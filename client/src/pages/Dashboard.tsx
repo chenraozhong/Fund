@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { api } from '../api'
-import type { Summary, Allocation, Fund, BatchDecision, BatchForecast, EstimateData, ForecastReviewSummary } from '../api'
+import type { Summary, Allocation, Fund, BatchDecision, BatchForecast, EstimateData, ForecastReviewSummary, ShortTermProfit } from '../api'
 
 function fmt(n: number) {
   return n.toLocaleString('zh-CN', { style: 'currency', currency: 'CNY' })
@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [showReview, setShowReview] = useState(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [costNavChanges, setCostNavChanges] = useState<Record<number, { costNav: number; costNavChange: number; costNavChangePct: number }>>({})
+  const [shortTermProfit, setShortTermProfit] = useState<ShortTermProfit | null>(null)
 
 
   // 判断今日净值是否已出（officialDate = 今天）
@@ -40,9 +41,15 @@ export default function Dashboard() {
   }
 
   const loadAll = () => {
+    // 先加载旧数据显示, 同时后台刷新NAV+录快照+更新累计收益
     api.getSummary().then(setSummary)
-    api.getAllocation().then(setAllocation)
     api.getFunds().then(setFunds)
+    api.getAllocation().then(setAllocation)
+    // 后台刷新NAV, 完成后重新加载最新数据
+    api.refreshAllNav().then(() => {
+      api.getSummary().then(setSummary)
+      api.getFunds().then(setFunds)
+    }).catch(() => {})
     // 自动获取实时估值
     api.getEstimateAll().then(est => {
       setEstimates(est as Record<number, EstimateData>)
@@ -65,6 +72,8 @@ export default function Dashboard() {
       for (const d of data) map[d.fund_id] = d
       setCostNavChanges(map)
     }).catch(() => {})
+    // 加载短线收益
+    api.getShortTermProfit().then(setShortTermProfit).catch(() => {})
   }
 
   useEffect(() => { loadAll() }, [])
@@ -109,11 +118,11 @@ export default function Dashboard() {
     )
   }
 
-  // 从 funds 数据汇总（funds GET / 已正确使用 market_nav 计算）
+  // 从 funds 数据汇总
   const totalValue = funds.reduce((s, f) => s + f.current_value, 0)
-  const totalCost = funds.reduce((s, f) => s + f.total_cost, 0)
-  const totalGain = totalValue - totalCost
-  const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0
+  const totalGain = funds.reduce((s, f) => s + f.gain, 0)
+  const totalHoldingCost = funds.reduce((s, f) => s + (f.holding_cost || 0), 0)
+  const totalGainPct = totalHoldingCost > 0 ? ((totalValue - totalHoldingCost) / totalHoldingCost) * 100 : 0
 
   return (
     <div className="space-y-8">
@@ -135,15 +144,90 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="总市值" value={fmt(totalValue)} />
-        <StatCard label="持仓成本" value={fmt(totalCost)} />
+        <StatCard label="持仓成本" value={fmt(totalHoldingCost)} />
         <StatCard
-          label="浮动盈亏"
+          label="累计收益"
           value={`${totalGain >= 0 ? '+' : ''}${fmt(totalGain)}`}
           sub={`${totalGainPct >= 0 ? '+' : ''}${totalGainPct.toFixed(2)}%`}
           color={totalGain >= 0 ? 'text-green-600' : 'text-red-600'}
         />
         <StatCard label="基金数" value={String(funds.length)} sub={`${summary.tx_count} 条交易`} />
       </div>
+
+      {/* 短线收益模块 */}
+      {shortTermProfit && shortTermProfit.tradeCount > 0 && (
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-7 h-7 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center text-sm">S</div>
+            <h2 className="text-base font-semibold text-gray-900">短线收益</h2>
+            <span className="text-xs text-gray-400">{shortTermProfit.tradeCount} 笔配对</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            <div>
+              <div className="text-xs text-gray-500">总收益</div>
+              <div className={`text-lg font-bold ${shortTermProfit.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {shortTermProfit.totalProfit >= 0 ? '+' : ''}{fmt(shortTermProfit.totalProfit)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">收益率</div>
+              <div className={`text-lg font-bold ${shortTermProfit.totalProfitPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {shortTermProfit.totalProfitPct >= 0 ? '+' : ''}{shortTermProfit.totalProfitPct.toFixed(2)}%
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">胜率</div>
+              <div className="text-lg font-bold text-gray-900">{shortTermProfit.winRate.toFixed(0)}%</div>
+              <div className="text-xs text-gray-400">{shortTermProfit.winCount}胜 / {shortTermProfit.lossCount}负</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">投入本金</div>
+              <div className="text-lg font-bold text-gray-900">{fmt(shortTermProfit.totalBuyCost)}</div>
+            </div>
+          </div>
+          {/* 按月统计 */}
+          {shortTermProfit.monthlyBreakdown && shortTermProfit.monthlyBreakdown.length > 0 && (
+            <div className="border-t border-gray-100 pt-2 mb-2">
+              <div className="text-xs text-gray-500 mb-1.5">按月统计</div>
+              <div className="space-y-1">
+                {shortTermProfit.monthlyBreakdown.map(m => (
+                  <div key={m.month} className="flex items-center justify-between text-xs bg-gray-50 rounded px-2 py-1.5">
+                    <span className="text-gray-700 font-medium w-16">{m.month}</span>
+                    <span className="text-gray-400">{m.count}笔</span>
+                    <span className="text-gray-400">{m.winCount}胜{m.lossCount}负</span>
+                    <span className={`font-medium ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {m.profit >= 0 ? '+' : ''}{fmt(m.profit)}
+                    </span>
+                    <span className={`font-medium min-w-[50px] text-right ${m.profitPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {m.profitPct >= 0 ? '+' : ''}{m.profitPct.toFixed(2)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* 按基金统计 */}
+          {shortTermProfit.fundBreakdown.length > 0 && (
+            <div className="border-t border-gray-100 pt-2">
+              <div className="text-xs text-gray-500 mb-1.5">按基金统计</div>
+              <div className="space-y-1">
+                {shortTermProfit.fundBreakdown.map(f => (
+                  <div key={f.fund_id} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-700 truncate max-w-[50%]">{f.asset}</span>
+                    <span className="text-gray-400">{f.count}笔</span>
+                    <span className={`font-medium ${f.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {f.profit >= 0 ? '+' : ''}{fmt(f.profit)}
+                    </span>
+                    <span className={`font-medium ${f.profitPct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {f.profitPct >= 0 ? '+' : ''}{f.profitPct.toFixed(2)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 全局决策面板 */}
       <div className="bg-white rounded-lg shadow p-3 sm:p-6">

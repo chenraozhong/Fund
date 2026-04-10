@@ -148,7 +148,7 @@ export default function Funds() {
         case 'value': cmp = a.current_value - b.current_value; break
         case 'gain': cmp = a.gain - b.gain; break
         case 'gain_pct': cmp = a.gain_pct - b.gain_pct; break
-        case 'cost': cmp = a.total_cost - b.total_cost; break
+        case 'cost': cmp = (a.holding_cost || 0) - (b.holding_cost || 0); break
       }
       return sortAsc ? cmp : -cmp
     })
@@ -438,7 +438,7 @@ export default function Funds() {
         <div className="space-y-2">
           {filtered.map(f => {
             const alloc = totalValue > 0 ? (f.current_value / totalValue) * 100 : 0
-            const costNav = f.holding_shares > 0 ? f.total_cost / f.holding_shares : 0
+            const costNav = f.holding_shares > 0 && f.holding_cost > 0 ? f.holding_cost / f.holding_shares : 0
             const est = estimates[f.id]
             return (
               <div key={f.id} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
@@ -544,12 +544,12 @@ export default function Funds() {
                   <div className="grid grid-cols-3 gap-3 pt-3 border-t border-gray-100">
                     <div>
                       <div className="text-xs text-gray-400 uppercase tracking-wide">已投入</div>
-                      <div className="text-sm font-medium text-gray-700 mt-0.5">{fmt(f.total_cost)}</div>
+                      <div className="text-sm font-medium text-gray-700 mt-0.5">{fmt(f.holding_cost || 0)}</div>
                     </div>
                     <div>
                       <div className="text-xs text-gray-400 uppercase tracking-wide">成本净值</div>
                       <div className="text-sm font-medium text-gray-700 mt-0.5">
-                        {f.holding_shares > 0 ? (f.total_cost / f.holding_shares).toFixed(4) : '-'}
+                        {f.holding_shares > 0 && f.holding_cost > 0 ? (f.holding_cost / f.holding_shares).toFixed(4) : '-'}
                       </div>
                     </div>
                     <div>

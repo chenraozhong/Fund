@@ -5,9 +5,8 @@ export function listFunds() {
     SELECT f.*,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
         - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
-      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy,
-      COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares * t.price ELSE 0 END), 0) as total_sell,
-      COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.price ELSE 0 END), 0) as total_dividend
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0) as total_buy_shares,
+      COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares * t.price ELSE 0 END), 0) as total_buy
     FROM funds f
     LEFT JOIN transactions t ON t.fund_id = f.id
     WHERE f.deleted_at IS NULL
@@ -16,17 +15,21 @@ export function listFunds() {
   `).all();
 
   return (funds as any[]).map(f => {
-    const costBasis = f.total_buy - f.total_sell + f.total_dividend;
     const marketValue = f.market_nav > 0 && f.holding_shares > 0
-      ? f.holding_shares * f.market_nav
-      : costBasis;
-    const gain = marketValue - costBasis;
+      ? f.holding_shares * f.market_nav : 0;
+    // 累计收益: 直接读funds.cumulative_gain(由每日收益累加)
+    const gain = f.cumulative_gain || 0;
+    // 持仓成本 = 持有份额 × 平均买入价(均价法)
+    const avgBuyPrice = f.total_buy_shares > 0 ? f.total_buy / f.total_buy_shares : 0;
+    const holdingCost = f.holding_shares > 0 ? f.holding_shares * avgBuyPrice : 0;
+    // 持仓收益率 = (市值 - 持仓成本) / 持仓成本
+    const holdingGainPct = holdingCost > 0 ? ((marketValue - holdingCost) / holdingCost) * 100 : 0;
     return {
       ...f,
       current_value: marketValue,
-      total_cost: costBasis,
-      gain,
-      gain_pct: costBasis > 0 ? (gain / costBasis) * 100 : 0,
+      holding_cost: Math.round(holdingCost * 100) / 100,
+      gain: Math.round(gain * 100) / 100,
+      gain_pct: holdingGainPct,
     };
   });
 }
@@ -75,8 +78,9 @@ export function permanentDeleteFund(id: number | string) {
 export function updateFund(id: number | string, data: {
   name?: string; color?: string; code?: string; market_nav?: number;
   stop_profit_pct?: number; stop_loss_pct?: number; base_position_pct?: number;
+  cumulative_gain?: number;
 }) {
-  const { name, color, code, market_nav, stop_profit_pct, stop_loss_pct, base_position_pct } = data;
+  const { name, color, code, market_nav, stop_profit_pct, stop_loss_pct, base_position_pct, cumulative_gain } = data;
   db.prepare(`UPDATE funds SET
     name = COALESCE(?, name),
     color = COALESCE(?, color),
@@ -84,9 +88,10 @@ export function updateFund(id: number | string, data: {
     market_nav = COALESCE(?, market_nav),
     stop_profit_pct = COALESCE(?, stop_profit_pct),
     stop_loss_pct = COALESCE(?, stop_loss_pct),
-    base_position_pct = COALESCE(?, base_position_pct)
+    base_position_pct = COALESCE(?, base_position_pct),
+    cumulative_gain = COALESCE(?, cumulative_gain)
     WHERE id = ?`
-  ).run(name ?? null, color ?? null, code ?? null, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, base_position_pct ?? null, id);
+  ).run(name ?? null, color ?? null, code ?? null, market_nav ?? null, stop_profit_pct ?? null, stop_loss_pct ?? null, base_position_pct ?? null, cumulative_gain ?? null, id);
   const fund = db.prepare('SELECT * FROM funds WHERE id = ?').get(id);
   if (!fund) throw { status: 404, error: 'Fund not found' };
   return fund;

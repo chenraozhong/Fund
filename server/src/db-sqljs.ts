@@ -289,6 +289,12 @@ export async function createSqlJsDb(
     "UPDATE funds SET stop_profit_pct = 20 WHERE stop_profit_pct = 5",
     "UPDATE funds SET stop_loss_pct = 15 WHERE stop_loss_pct = 5",
     "ALTER TABLE forecasts ADD COLUMN model_version TEXT DEFAULT 'v5'",
+    "ALTER TABLE trades ADD COLUMN nav_diff REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN profit_pct REAL DEFAULT 0",
+    "UPDATE trades SET nav_diff = ROUND((sell_price - buy_price) * 10000) / 10000, profit_pct = CASE WHEN buy_price > 0 THEN ROUND(((sell_price - buy_price) / buy_price) * 10000) / 100 ELSE 0 END WHERE nav_diff = 0",
+    "ALTER TABLE transactions ADD COLUMN paired_shares REAL DEFAULT 0",
+    "ALTER TABLE funds ADD COLUMN cumulative_gain REAL DEFAULT 0",
+    "ALTER TABLE daily_snapshots ADD COLUMN daily_gain REAL DEFAULT 0",
   ];
   for (const sql of migrations) {
     try { adapter.exec(sql); } catch (_) { /* column/index already exists */ }

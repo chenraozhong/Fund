@@ -125,6 +125,27 @@ rawDb.exec(`
   );
 `);
 
+// Add nav_diff and profit_pct columns to trades
+rawDb.exec(`
+  CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fund_id INTEGER NOT NULL REFERENCES funds(id) ON DELETE CASCADE,
+    asset TEXT NOT NULL,
+    buy_date TEXT NOT NULL,
+    buy_shares REAL NOT NULL,
+    buy_price REAL NOT NULL,
+    sell_date TEXT NOT NULL,
+    sell_shares REAL NOT NULL,
+    sell_price REAL NOT NULL,
+    paired_shares REAL NOT NULL,
+    profit REAL NOT NULL,
+    nav_diff REAL DEFAULT 0,
+    profit_pct REAL DEFAULT 0,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
 // Migrations
 const migrations = [
   'ALTER TABLE funds ADD COLUMN market_nav REAL DEFAULT 0',
@@ -138,6 +159,17 @@ const migrations = [
   "UPDATE funds SET stop_loss_pct = 15 WHERE stop_loss_pct = 5",
   // v6: 版本号
   "ALTER TABLE forecasts ADD COLUMN model_version TEXT DEFAULT 'v5'",
+  // trades: nav diff & profit pct
+  "ALTER TABLE trades ADD COLUMN nav_diff REAL DEFAULT 0",
+  "ALTER TABLE trades ADD COLUMN profit_pct REAL DEFAULT 0",
+  // backfill existing trades
+  "UPDATE trades SET nav_diff = ROUND((sell_price - buy_price) * 10000) / 10000, profit_pct = CASE WHEN buy_price > 0 THEN ROUND(((sell_price - buy_price) / buy_price) * 10000) / 100 ELSE 0 END WHERE nav_diff = 0",
+  // transactions: paired tracking (不再删除原始交易)
+  "ALTER TABLE transactions ADD COLUMN paired_shares REAL DEFAULT 0",
+  // funds: 累计收益(每日累加方式)
+  "ALTER TABLE funds ADD COLUMN cumulative_gain REAL DEFAULT 0",
+  // daily_snapshots: 当日收益
+  "ALTER TABLE daily_snapshots ADD COLUMN daily_gain REAL DEFAULT 0",
 ];
 for (const sql of migrations) {
   try { rawDb.exec(sql); } catch (_) { /* column/index already exists */ }

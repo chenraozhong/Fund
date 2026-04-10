@@ -207,12 +207,14 @@ export function mergeTransactions(ids: number[]) {
   const types = new Set(txs.map(t => t.type));
 
   if (fundIds.size > 1) throw { status: 400, error: 'All transactions must belong to the same fund' };
-  if (assets.size > 1) throw { status: 400, error: 'All transactions must be for the same asset' };
+  // 同基金内asset名称可能不一致(简称vs全称), 不再校验asset, 统一用基金名称
   if (types.size > 1) throw { status: 400, error: 'All transactions must be the same type' };
 
   const type = txs[0].type;
   const fund_id = txs[0].fund_id;
-  const asset = txs[0].asset;
+  // 统一用基金名称作为asset
+  const fundRow = db.prepare('SELECT name FROM funds WHERE id = ?').get(fund_id) as any;
+  const asset = fundRow?.name || txs[0].asset;
 
   let totalShares = 0, totalCost = 0, latestDate = txs[0].date;
   for (const tx of txs) {

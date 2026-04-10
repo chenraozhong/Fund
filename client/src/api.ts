@@ -84,7 +84,7 @@ export interface Fund {
   created_at: string;
   holding_shares: number;
   current_value: number;
-  total_cost: number;
+  holding_cost: number;
   gain: number;
   gain_pct: number;
 }
@@ -99,6 +99,7 @@ export interface Transaction {
   asset: string;
   shares: number;
   price: number;
+  paired_shares: number;
   notes: string | null;
 }
 
@@ -164,8 +165,23 @@ export interface Trade {
   sell_price: number;
   paired_shares: number;
   profit: number;
+  nav_diff: number;
+  profit_pct: number;
   notes: string | null;
   created_at: string;
+}
+
+export interface ShortTermProfit {
+  totalProfit: number;
+  totalProfitPct: number;
+  totalBuyCost: number;
+  tradeCount: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  fundBreakdown: { fund_id: number; asset: string; profit: number; profitPct: number; count: number }[];
+  monthlyBreakdown: { month: string; profit: number; profitPct: number; buyCost: number; count: number; winCount: number; lossCount: number }[];
+  recentTrades: (Trade & { navDiff: number; profitPct: number })[];
 }
 
 export interface NavLatest {
@@ -551,6 +567,8 @@ export const api = {
     request<DailySnapshot[]>(`/stats/snapshots/${fundId}${days ? `?days=${days}` : ''}`),
   getCostNavChanges: () =>
     request<{ fund_id: number; costNav: number; prevCostNav: number; costNavChange: number; costNavChangePct: number; date: string }[]>('/stats/cost-nav-changes'),
+
+  getShortTermProfit: () => request<ShortTermProfit>('/stats/short-term-profit'),
 
   getEstimateAll: () => request<Record<number, { gsz: number; gszzl: number; gztime: string; dwjz: number; name: string }>>('/nav/estimate/all'),
   getLatestNav: (code: string) => request<NavLatest>(`/nav/${code}/latest`),

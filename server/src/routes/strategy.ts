@@ -2072,7 +2072,8 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     reasoning.push(`[跳过] 卖出金额过小(<¥100)，暂不操作`);
   }
 
-  // [A股修正+v7] 7天赎回惩罚检查：紧急止损可覆盖赎回保护
+  // [A股修正+v7] 7天赎回惩罚检查(FIFO)：卖出优先匹配老持仓，无需手续费
+  // 例：已持有2000份(>7天) + 近7天买入200份 → 卖出2000份以内都免手续费
   if (action === 'sell' && daysSinceLastBuy < 7) {
     const recentBuys = db.prepare(
       "SELECT COALESCE(SUM(shares), 0) as recent_shares FROM transactions WHERE fund_id = ? AND type = 'buy' AND date >= date('now', '-7 days')"
@@ -2082,8 +2083,10 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     // [v7] 紧急止损覆盖: 熔断级别critical 或 单日跌>3% → 接受1.5%费用
     const todayChange = navHistory.length >= 2 ? ((nav - navHistory[navHistory.length - 2]?.nav) / navHistory[navHistory.length - 2]?.nav * 100) : 0;
     const isEmergency = cbLevel === 'critical' || todayChange < -3;
-    if (isEmergency && safeToSellShares <= 0) {
-      // 紧急情况下仍然卖出，接受赎回费
+    if (opShares <= safeToSellShares) {
+      // FIFO: 卖出量在老持仓范围内，无赎回费
+      reasoning.push(`[FIFO免赎回费] 卖出${opShares}份 ≤ 老持仓${safeToSellShares.toFixed(0)}份(>7天)，无手续费`);
+    } else if (isEmergency && safeToSellShares <= 0) {
       reasoning.push(`[v7紧急止损] 接受1.5%赎回费，止损优先于赎回保护（今日跌${todayChange.toFixed(1)}%）`);
     } else if (safeToSellShares <= 0) {
       action = 'hold'; opShares = 0; opAmount = 0;
@@ -2091,7 +2094,7 @@ async function computeDecision(fundId: number | string, realtimeNav: number, mod
     } else if (opShares > safeToSellShares) {
       opShares = r4(safeToSellShares);
       opAmount = Math.round(opShares * nav);
-      reasoning.push(`[赎回保护] 7天内买入${recentBuyShares.toFixed(2)}份不可卖，仅卖出早期持仓${opShares}份`);
+      reasoning.push(`[FIFO赎回保护] 仅卖出老持仓${opShares}份(免费)，7天内买入${recentBuyShares.toFixed(0)}份暂不卖`);
     }
   }
 
@@ -3659,9 +3662,15 @@ function isTradingDay(d: Date): boolean {
 function getNextTradingDay(): string {
   const now = new Date();
   const d = new Date(now);
-  // 15:00前预测的是今天，15:00后预测明天
-  if (d.getHours() >= 15) d.setDate(d.getDate() + 1);
-  // 跳过周末和法定假日
+  // 交易日当天净值要收盘(15:00)后才确认，所以：
+  // - 交易日 0:00~15:00：当天净值未确认，预测下一个交易日
+  // - 交易日 15:00后：当天净值已确认，也预测下一个交易日
+  // - 非交易日：预测下一个交易日
+  // 即：始终预测"下一个"交易日
+  if (isTradingDay(d)) {
+    // 今天是交易日 → 跳到明天再找
+    d.setDate(d.getDate() + 1);
+  }
   while (!isTradingDay(d)) d.setDate(d.getDate() + 1);
   return toLocalDateStr(d);
 }
@@ -4293,12 +4302,73 @@ router.get('/funds/:id/band-trade', async (req: Request, res: Response) => {
       });
     }
 
-    // 7天持有期检查
+    // 7天持有期检查(FIFO: 老持仓卖出免手续费)
     const recentBuys = db.prepare(
       "SELECT date, shares, price FROM transactions WHERE fund_id = ? AND type = 'buy' AND date >= date('now', '-7 days') ORDER BY date DESC"
     ).all(fundId) as any[];
     const recentBuyShares = recentBuys.reduce((s: number, t: any) => s + t.shares, 0);
     const hasRecentBuy = recentBuys.length > 0;
+    const safeToSellShares = Math.max(0, holdingShares - recentBuyShares);
+
+    let holdingWarning: string | null = null;
+    if (hasRecentBuy) {
+      if (safeToSellShares > 0) {
+        holdingWarning = `近7天买入${recentBuyShares.toFixed(0)}份，但老持仓${safeToSellShares.toFixed(0)}份可免手续费卖出(FIFO)`;
+      } else {
+        holdingWarning = `全部${recentBuyShares.toFixed(0)}份均为7天内买入，卖出将产生1.5%赎回费`;
+      }
+    }
+
+    // === 未配对交易建议（基于历史交易对比当前估值）===
+    const allBuyTxs = db.prepare(`SELECT id, date, shares, price FROM transactions WHERE fund_id = ? AND type = 'buy' ORDER BY date ASC`).all(fundId) as any[];
+    const allSellTxs = db.prepare(`SELECT id, date, shares, price FROM transactions WHERE fund_id = ? AND type = 'sell' ORDER BY date ASC`).all(fundId) as any[];
+
+    // FIFO找未配对买入（过滤配对剩余极低份额: 市值<¥10）
+    let fifoRemainSold = allSellTxs.reduce((s: number, t: any) => s + t.shares, 0);
+    const ubList: { date: string; shares: number; price: number }[] = [];
+    for (const buy of allBuyTxs) {
+      let remain = buy.shares;
+      if (fifoRemainSold > 0) { const m = Math.min(fifoRemainSold, remain); remain -= m; fifoRemainSold -= m; }
+      if (remain > 0.001 && remain * realtimeNav >= 10) ubList.push({ date: buy.date, shares: r4(remain), price: buy.price });
+    }
+
+    // FIFO找未配对卖出（过滤极低份额）
+    let fifoRemainBought = allBuyTxs.reduce((s: number, t: any) => s + t.shares, 0);
+    const usList: { date: string; shares: number; price: number }[] = [];
+    for (const sell of allSellTxs) {
+      let remain = sell.shares;
+      if (fifoRemainBought > 0) { const m = Math.min(fifoRemainBought, remain); remain -= m; fifoRemainBought -= m; }
+      if (remain > 0.001 && remain * realtimeNav >= 10) usList.push({ date: sell.date, shares: r4(remain), price: sell.price });
+    }
+
+    const unpairedAdvice: { direction: 'sell' | 'buy'; date: string; shares: number; tradeNav: number; currentNav: number; diffPct: number; estProfit: number; reason: string }[] = [];
+
+    // 未配对买入: 买入净值 < 当前估值 → 卖出建议（浮盈可兑现）
+    for (const b of ubList) {
+      if (b.price < realtimeNav) {
+        const diffPct = r4(((realtimeNav - b.price) / b.price) * 100);
+        const estProfit = Math.round(b.shares * (realtimeNav - b.price) * 100) / 100;
+        unpairedAdvice.push({
+          direction: 'sell', date: b.date, shares: b.shares, tradeNav: b.price, currentNav: realtimeNav,
+          diffPct, estProfit,
+          reason: `${b.date}买入@${b.price.toFixed(4)}，现价${realtimeNav.toFixed(4)}浮盈+${diffPct.toFixed(2)}%，卖出可获¥${estProfit.toFixed(2)}`,
+        });
+      }
+    }
+
+    // 未配对卖出: 卖出净值 < 当前估值 → 买入建议（趋势向上，买回重新入场）
+    for (const s of usList) {
+      if (s.price < realtimeNav) {
+        const diffPct = r4(((realtimeNav - s.price) / s.price) * 100);
+        const estCost = Math.round(s.shares * realtimeNav * 100) / 100;
+        const extraCost = Math.round(s.shares * (realtimeNav - s.price) * 100) / 100;
+        unpairedAdvice.push({
+          direction: 'buy', date: s.date, shares: s.shares, tradeNav: s.price, currentNav: realtimeNav,
+          diffPct, estProfit: -extraCost,
+          reason: `${s.date}卖出@${s.price.toFixed(4)}，现价${realtimeNav.toFixed(4)}已涨+${diffPct.toFixed(2)}%，买回${s.shares.toFixed(2)}份需¥${estCost.toFixed(2)}`,
+        });
+      }
+    }
 
     res.json({
       suitable,
@@ -4326,7 +4396,9 @@ router.get('/funds/:id/band-trade', async (req: Request, res: Response) => {
       },
       gridStep: Math.round(gridStep * 100) / 100,
       signals,
-      holdingWarning: hasRecentBuy ? `近7天有${recentBuys.length}笔买入(${recentBuyShares.toFixed(0)}份)，卖出将产生1.5%赎回费` : null,
+      unpairedAdvice,
+      holdingWarning,
+      safeToSellShares: r4(safeToSellShares),
       recentBuys: recentBuys.map((t: any) => ({ date: t.date, shares: r4(t.shares), price: r4(t.price) })),
     });
   } catch (err: any) {
@@ -4405,12 +4477,49 @@ export async function getBandTradeAdvice(fundId: number | string, realtimeNav?: 
     signals.push({ action: 'hold', urgency: 'low', amount: 0, shares: 0, targetNav: 0, holdDays: '-', reason: `%B=${currentPctB.toFixed(0)} RSI=${tech.rsi14.toFixed(0)}，无明确波段机会`, grid: { buyLevel: r4(nav * (1 - gridStep * 1.5 / 100)), sellLevel: r4(nav * (1 + gridStep * 1.5 / 100)), spread: gridStep * 3 } });
   }
 
+  // === 未配对交易建议 ===
+  const fid = Number(fundId);
+  const aBuys = db.prepare(`SELECT id, date, shares, price FROM transactions WHERE fund_id = ? AND type = 'buy' ORDER BY date ASC`).all(fid) as any[];
+  const aSells = db.prepare(`SELECT id, date, shares, price FROM transactions WHERE fund_id = ? AND type = 'sell' ORDER BY date ASC`).all(fid) as any[];
+
+  let frs = aSells.reduce((s: number, t: any) => s + t.shares, 0);
+  const ub2: { date: string; shares: number; price: number }[] = [];
+  for (const buy of aBuys) {
+    let rem = buy.shares;
+    if (frs > 0) { const m = Math.min(frs, rem); rem -= m; frs -= m; }
+    if (rem > 0.001 && rem * nav >= 10) ub2.push({ date: buy.date, shares: r4(rem), price: buy.price });
+  }
+  let frb = aBuys.reduce((s: number, t: any) => s + t.shares, 0);
+  const us2: { date: string; shares: number; price: number }[] = [];
+  for (const sell of aSells) {
+    let rem = sell.shares;
+    if (frb > 0) { const m = Math.min(frb, rem); rem -= m; frb -= m; }
+    if (rem > 0.001 && rem * nav >= 10) us2.push({ date: sell.date, shares: r4(rem), price: sell.price });
+  }
+
+  const unpairedAdvice: { direction: 'sell' | 'buy'; date: string; shares: number; tradeNav: number; currentNav: number; diffPct: number; estProfit: number; reason: string }[] = [];
+  for (const b of ub2) {
+    if (b.price < nav) {
+      const diffPct = r4(((nav - b.price) / b.price) * 100);
+      const estProfit = Math.round(b.shares * (nav - b.price) * 100) / 100;
+      unpairedAdvice.push({ direction: 'sell', date: b.date, shares: b.shares, tradeNav: b.price, currentNav: nav, diffPct, estProfit, reason: `${b.date}买入@${b.price.toFixed(4)}，现价${nav.toFixed(4)}浮盈+${diffPct.toFixed(2)}%，卖出可获¥${estProfit.toFixed(2)}` });
+    }
+  }
+  for (const s of us2) {
+    if (s.price < nav) {
+      const diffPct = r4(((nav - s.price) / s.price) * 100);
+      const estCost = Math.round(s.shares * nav * 100) / 100;
+      const extraCost = Math.round(s.shares * (nav - s.price) * 100) / 100;
+      unpairedAdvice.push({ direction: 'buy', date: s.date, shares: s.shares, tradeNav: s.price, currentNav: nav, diffPct, estProfit: -extraCost, reason: `${s.date}卖出@${s.price.toFixed(4)}，现价${nav.toFixed(4)}已涨+${diffPct.toFixed(2)}%，买回${s.shares.toFixed(2)}份需¥${estCost.toFixed(2)}` });
+    }
+  }
+
   return {
     suitable: suitability >= 3, suitability, suitReasons, fundName: fund.name, nav,
     volatility: Math.round(vol20 * 10) / 10, avgDailyMove: Math.round(avgDailyMove * 100) / 100, atrPct: Math.round(atrPct * 100) / 100,
     position: { holdingShares: r4(holdingShares), costNav: r4(costNav), gainPct: Math.round(gainPct * 100) / 100, baseShares: r4(holdingShares * basePct / 100), swingShares, swingValue, basePct },
     technical: { percentB: Math.round(currentPctB), rsi14: Math.round(tech.rsi14), trend: tech.trend, support: tech.support, resistance: tech.resistance },
-    gridStep, signals,
+    gridStep, signals, unpairedAdvice,
     holdingWarning: null, recentBuys: [],
   };
 }
