@@ -236,6 +236,10 @@ export function updateFundGain(id: number | string, gain: number) {
   db.prepare('UPDATE transactions SET shares = ?, price = ? WHERE id = ?')
     .run(Math.round(newBaseShares * 10000) / 10000, newBasePrice, base.id);
 
+  // 同步更新cumulative_gain
+  db.prepare('UPDATE funds SET cumulative_gain = ? WHERE id = ?')
+    .run(Math.round(gain * 100) / 100, id);
+
   return {
     success: true,
     gain,

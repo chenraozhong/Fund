@@ -1,0 +1,688 @@
+{
+  "timestamp": "2026-04-05T13:02:12.877391",
+  "fund_classifications": {
+    "000217": {
+      "name": "华安黄金ETF联接C",
+      "sector": "黄金",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.7874294933415023,
+      "features": {
+        "annualized_vol": 37.881386317662006,
+        "trend_strength": 0.7985346204597541,
+        "hurst_exponent": 0.7418575904516754,
+        "autocorrelation_1": -0.03914316444716746,
+        "max_drawdown": -25.111026216513118,
+        "upside_vol_ratio": 0.6585624810793255,
+        "trend_persistence": 2.1636363636363636,
+        "regime_stability": 0.5874600570057954
+      }
+    },
+    "020982": {
+      "name": "华安国证机器人产业指数C",
+      "sector": "AI/机器人",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.6118329976618747,
+      "features": {
+        "annualized_vol": 25.82358148690986,
+        "trend_strength": -0.18549899298562397,
+        "hurst_exponent": 0.8318082809256296,
+        "autocorrelation_1": 0.04087833456378802,
+        "max_drawdown": -19.950425829414026,
+        "upside_vol_ratio": 0.8731641537193117,
+        "trend_persistence": 1.7761194029850746,
+        "regime_stability": 0.14649947749743394
+      }
+    },
+    "019671": {
+      "name": "广发港股创新药ETF联接C",
+      "sector": "医药/生物",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.7876310854920481,
+      "features": {
+        "annualized_vol": 33.19702921599167,
+        "trend_strength": -0.7505243419681922,
+        "hurst_exponent": 0.6320855039453163,
+        "autocorrelation_1": -0.011634932477693252,
+        "max_drawdown": -24.394653580422275,
+        "upside_vol_ratio": 1.240609411925889,
+        "trend_persistence": 2.38,
+        "regime_stability": 0.17290840884194392
+      }
+    },
+    "010572": {
+      "name": "易方达中证万得生物科技C",
+      "sector": "医药/生物",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.7800941037572053,
+      "features": {
+        "annualized_vol": 22.979189154148976,
+        "trend_strength": -0.7203764150288213,
+        "hurst_exponent": 0.7018378367410506,
+        "autocorrelation_1": 0.031252903830053885,
+        "max_drawdown": -20.19230769230773,
+        "upside_vol_ratio": 1.1641021840246835,
+        "trend_persistence": 2.087719298245614,
+        "regime_stability": 0.23122530495824187
+      }
+    },
+    "002611": {
+      "name": "博时黄金ETF联接C",
+      "sector": "黄金",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.7918236296864266,
+      "features": {
+        "annualized_vol": 37.5454774592831,
+        "trend_strength": 0.7965414264879503,
+        "hurst_exponent": 0.7412564921267221,
+        "autocorrelation_1": -0.040607876562142216,
+        "max_drawdown": -24.932555689730496,
+        "upside_vol_ratio": 0.659804591497983,
+        "trend_persistence": 2.1636363636363636,
+        "regime_stability": 0.5901844482270647
+      }
+    },
+    "004253": {
+      "name": "国泰黄金ETF联接C",
+      "sector": "黄金",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.8136237301248836,
+      "features": {
+        "annualized_vol": 38.3050201525159,
+        "trend_strength": 0.8006944926731021,
+        "hurst_exponent": 0.7436337239212568,
+        "autocorrelation_1": -0.04787457670829457,
+        "max_drawdown": -25.056577894616535,
+        "upside_vol_ratio": 0.6628565490628932,
+        "trend_persistence": 2.1636363636363636,
+        "regime_stability": 0.5883651629360223
+      }
+    },
+    "018897": {
+      "name": "易方达消费电子ETF联接C",
+      "sector": "消费/传媒",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.5866622682130704,
+      "features": {
+        "annualized_vol": 31.12509622733442,
+        "trend_strength": -0.10998680463921104,
+        "hurst_exponent": 0.759279109692282,
+        "autocorrelation_1": -0.10834129715373739,
+        "max_drawdown": -17.484495162490703,
+        "upside_vol_ratio": 0.7729033058607913,
+        "trend_persistence": 1.9833333333333334,
+        "regime_stability": 0.14804710973072432
+      }
+    },
+    "023408": {
+      "name": "华宝创业板AI ETF联接C",
+      "sector": "AI/机器人",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.85,
+      "features": {
+        "annualized_vol": 38.53155570211168,
+        "trend_strength": 0.841405653170359,
+        "hurst_exponent": 0.7517417716879499,
+        "autocorrelation_1": -0.12373862632045117,
+        "max_drawdown": -12.522686025408358,
+        "upside_vol_ratio": 1.284552051057356,
+        "trend_persistence": 1.803030303030303,
+        "regime_stability": 0.09206845188743193
+      }
+    },
+    "012365": {
+      "name": "广发中证光伏产业指数C",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.7572231096295268,
+      "features": {
+        "annualized_vol": 33.221294445874605,
+        "trend_strength": 0.7460031946662962,
+        "hurst_exponent": 0.5952086962025555,
+        "autocorrelation_1": -0.03652234534030263,
+        "max_drawdown": -16.062471500228032,
+        "upside_vol_ratio": 1.072257187350529,
+        "trend_persistence": 2.0517241379310347,
+        "regime_stability": 0.28153718171371256
+      }
+    },
+    "022365": {
+      "name": "永赢科技智选混合C",
+      "sector": "混合/主题",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.8271937692373474,
+      "features": {
+        "annualized_vol": 39.6714954699225,
+        "trend_strength": 0.7818667963052989,
+        "hurst_exponent": 0.747761720479658,
+        "autocorrelation_1": -0.05239792307911584,
+        "max_drawdown": -18.442524277039112,
+        "upside_vol_ratio": 1.2016508803391837,
+        "trend_persistence": 1.8888888888888888,
+        "regime_stability": 0.19382356034198706
+      }
+    },
+    "019325": {
+      "name": "易方达中证生物科技ETF联接C",
+      "sector": "医药/生物",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.8,
+      "features": {
+        "annualized_vol": 21.788618632617414,
+        "trend_strength": -0.8244600319466628,
+        "hurst_exponent": 0.7069205653148501,
+        "autocorrelation_1": 0.02350932990687134,
+        "max_drawdown": -21.895334983044652,
+        "upside_vol_ratio": 1.152744985130756,
+        "trend_persistence": 2.087719298245614,
+        "regime_stability": 0.21068280153622168
+      }
+    },
+    "025209": {
+      "name": "永赢先锋半导体智选混合C",
+      "sector": "半导体/芯片",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.7778437545817225,
+      "features": {
+        "annualized_vol": 48.26097130640709,
+        "trend_strength": 0.8202375164942008,
+        "hurst_exponent": 0.6282615430109834,
+        "autocorrelation_1": -0.05198272394143487,
+        "max_drawdown": -17.341789416257487,
+        "upside_vol_ratio": 1.272077790839957,
+        "trend_persistence": 1.9193548387096775,
+        "regime_stability": 0.11631246848327102
+      }
+    },
+    "016387": {
+      "name": "永赢低碳环保智选混合C",
+      "sector": "新能源/光伏",
+      "category": "D",
+      "category_label": "防御消费型",
+      "strategy": "vote",
+      "confidence": 0.5,
+      "features": {
+        "annualized_vol": 32.03266937858601,
+        "trend_strength": 0.10302104312799498,
+        "hurst_exponent": 0.6506940848889499,
+        "autocorrelation_1": -0.06701336853763915,
+        "max_drawdown": -18.46552617936755,
+        "upside_vol_ratio": 0.8878542636481193,
+        "trend_persistence": 1.9833333333333334,
+        "regime_stability": 0.248799912111015
+      }
+    },
+    "024195": {
+      "name": "永赢国证商用卫星通信C",
+      "sector": "混合/主题",
+      "category": "B",
+      "category_label": "高波动周期型",
+      "strategy": "trend_hunter",
+      "confidence": 0.6820548226972322,
+      "features": {
+        "annualized_vol": 39.966882137659745,
+        "trend_strength": 0.7291270227099103,
+        "hurst_exponent": 0.6722609629737404,
+        "autocorrelation_1": 0.020513705674308047,
+        "max_drawdown": -25.44363654853313,
+        "upside_vol_ratio": 1.1297015423154861,
+        "trend_persistence": 2.2037037037037037,
+        "regime_stability": 0.3400920309171851
+      }
+    },
+    "004753": {
+      "name": "广发中证传媒ETF联接C",
+      "sector": "消费/传媒",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.593258559622196,
+      "features": {
+        "annualized_vol": 32.33241098945178,
+        "trend_strength": 0.3108618654073199,
+        "hurst_exponent": 0.8361279201303533,
+        "autocorrelation_1": 0.21994932711376083,
+        "max_drawdown": -26.016646848989307,
+        "upside_vol_ratio": 1.321105395735794,
+        "trend_persistence": 1.9508196721311475,
+        "regime_stability": 0.29250605953164954
+      }
+    },
+    "016874": {
+      "name": "广发远见智选混合C",
+      "sector": "混合/主题",
+      "category": "A",
+      "category_label": "低波动趋势型",
+      "strategy": "momentum_gate",
+      "confidence": 0.85,
+      "features": {
+        "annualized_vol": 47.282320159328386,
+        "trend_strength": 0.8558024862837695,
+        "hurst_exponent": 0.7682832287433908,
+        "autocorrelation_1": -0.1515360518463086,
+        "max_drawdown": -16.860409261216255,
+        "upside_vol_ratio": 1.0010946592093228,
+        "trend_persistence": 1.7246376811594204,
+        "regime_stability": 0.10701236546538093
+      }
+    },
+    "017074": {
+      "name": "嘉实清洁能源股票C",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.7344167419033729,
+      "features": {
+        "annualized_vol": 33.21452111734185,
+        "trend_strength": 0.6639002708521424,
+        "hurst_exponent": 0.7386066667144903,
+        "autocorrelation_1": -0.10582690435571548,
+        "max_drawdown": -13.927806164496417,
+        "upside_vol_ratio": 0.9788659962839354,
+        "trend_persistence": 1.75,
+        "regime_stability": 0.18645318834625568
+      }
+    },
+    "010990": {
+      "name": "南方有色金属ETF联接E",
+      "sector": "有色/稀土",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.7674996720451266,
+      "features": {
+        "annualized_vol": 40.64271334924746,
+        "trend_strength": 0.7829988193624556,
+        "hurst_exponent": 0.6537858931352485,
+        "autocorrelation_1": -0.04497436526866874,
+        "max_drawdown": -27.625293498502167,
+        "upside_vol_ratio": 0.8326987896693944,
+        "trend_persistence": 1.9193548387096775,
+        "regime_stability": 0.2648333367426386
+      }
+    },
+    "012832": {
+      "name": "南方中证新能源ETF联接C",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.7409912725420746,
+      "features": {
+        "annualized_vol": 29.74042635793278,
+        "trend_strength": 0.6875685811514688,
+        "hurst_exponent": 0.591151727307914,
+        "autocorrelation_1": -0.12139200602497029,
+        "max_drawdown": -12.233089957294412,
+        "upside_vol_ratio": 0.9011213965459723,
+        "trend_persistence": 1.803030303030303,
+        "regime_stability": 0.2270127823665577
+      }
+    },
+    "011036": {
+      "name": "嘉实中证稀土产业ETF联接C",
+      "sector": "有色/稀土",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.65,
+      "features": {
+        "annualized_vol": 34.5595561060296,
+        "trend_strength": 0.5710882700187512,
+        "hurst_exponent": 0.6665995029902404,
+        "autocorrelation_1": -0.053776365283717834,
+        "max_drawdown": -21.018660531697343,
+        "upside_vol_ratio": 1.0210879026282795,
+        "trend_persistence": 1.9193548387096775,
+        "regime_stability": 0.2678179601948401
+      }
+    },
+    "008888": {
+      "name": "华夏国证半导体芯片ETF联接C",
+      "sector": "半导体/芯片",
+      "category": "C",
+      "category_label": "高波动成长型",
+      "strategy": "v73",
+      "confidence": 0.5561601500104174,
+      "features": {
+        "annualized_vol": 33.31832074208911,
+        "trend_strength": 0.1872005000347246,
+        "hurst_exponent": 0.7306242388664778,
+        "autocorrelation_1": -0.1683136149728062,
+        "max_drawdown": -20.894341115947785,
+        "upside_vol_ratio": 0.7776642586278277,
+        "trend_persistence": 1.859375,
+        "regime_stability": 0.1474408054172175
+      }
+    }
+  },
+  "fund_comparison": [
+    {
+      "name": "华安黄金ETF联接C",
+      "code": "000217",
+      "sector": "黄金",
+      "category": "A",
+      "selected_strategy": "momentum_gate",
+      "adaptive_sharpe": 1.629,
+      "adaptive_return": 26.05,
+      "best_single_name": "动量守门员",
+      "best_single_sharpe": 1.629,
+      "diff": 0.0
+    },
+    {
+      "name": "华安国证机器人产业指数C",
+      "code": "020982",
+      "sector": "AI/机器人",
+      "category": "D",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 0.234,
+      "adaptive_return": 7.32,
+      "best_single_name": "均值回归",
+      "best_single_sharpe": 1.027,
+      "diff": -0.7929999999999999
+    },
+    {
+      "name": "广发港股创新药ETF联接C",
+      "code": "019671",
+      "sector": "医药/生物",
+      "category": "D",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 0.688,
+      "adaptive_return": 28.12,
+      "best_single_name": "趋势猎手",
+      "best_single_sharpe": 0.688,
+      "diff": 0.0
+    },
+    {
+      "name": "易方达中证万得生物科技C",
+      "code": "010572",
+      "sector": "医药/生物",
+      "category": "D",
+      "selected_strategy": "vote",
+      "adaptive_sharpe": 0.68,
+      "adaptive_return": 12.92,
+      "best_single_name": "双模型投票",
+      "best_single_sharpe": 0.699,
+      "diff": -0.018999999999999906
+    },
+    {
+      "name": "博时黄金ETF联接C",
+      "code": "002611",
+      "sector": "黄金",
+      "category": "A",
+      "selected_strategy": "momentum_gate",
+      "adaptive_sharpe": 1.574,
+      "adaptive_return": 26.85,
+      "best_single_name": "动量守门员",
+      "best_single_sharpe": 1.574,
+      "diff": 0.0
+    },
+    {
+      "name": "国泰黄金ETF联接C",
+      "code": "004253",
+      "sector": "黄金",
+      "category": "A",
+      "selected_strategy": "momentum_gate",
+      "adaptive_sharpe": 1.696,
+      "adaptive_return": 28.02,
+      "best_single_name": "动量守门员",
+      "best_single_sharpe": 1.696,
+      "diff": 0.0
+    },
+    {
+      "name": "易方达消费电子ETF联接C",
+      "code": "018897",
+      "sector": "消费/传媒",
+      "category": "D",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 1.062,
+      "adaptive_return": 37.09,
+      "best_single_name": "动量守门员",
+      "best_single_sharpe": 1.74,
+      "diff": -0.6779999999999999
+    },
+    {
+      "name": "华宝创业板AI ETF联接C",
+      "code": "023408",
+      "sector": "AI/机器人",
+      "category": "A",
+      "selected_strategy": "momentum_gate",
+      "adaptive_sharpe": 2.711,
+      "adaptive_return": 57.12,
+      "best_single_name": "v7.3策略",
+      "best_single_sharpe": 2.82,
+      "diff": -0.10899999999999999
+    },
+    {
+      "name": "广发中证光伏产业指数C",
+      "code": "012365",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "selected_strategy": "v73",
+      "adaptive_sharpe": 1.271,
+      "adaptive_return": 34.25,
+      "best_single_name": "v7.3策略",
+      "best_single_sharpe": 1.271,
+      "diff": 0.0
+    },
+    {
+      "name": "永赢科技智选混合C",
+      "code": "022365",
+      "sector": "混合/主题",
+      "category": "A",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 1.922,
+      "adaptive_return": 131.62,
+      "best_single_name": "趋势猎手",
+      "best_single_sharpe": 1.922,
+      "diff": 0.0
+    },
+    {
+      "name": "易方达中证生物科技ETF联接C",
+      "code": "019325",
+      "sector": "医药/生物",
+      "category": "D",
+      "selected_strategy": "vote",
+      "adaptive_sharpe": 0.396,
+      "adaptive_return": 7.81,
+      "best_single_name": "双模型投票",
+      "best_single_sharpe": 0.513,
+      "diff": -0.11699999999999999
+    },
+    {
+      "name": "永赢先锋半导体智选混合C",
+      "code": "025209",
+      "sector": "半导体/芯片",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 1.313,
+      "adaptive_return": 19.89,
+      "best_single_name": "趋势猎手",
+      "best_single_sharpe": 1.313,
+      "diff": 0.0
+    },
+    {
+      "name": "永赢低碳环保智选混合C",
+      "code": "016387",
+      "sector": "新能源/光伏",
+      "category": "D",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": -0.227,
+      "adaptive_return": -6.89,
+      "best_single_name": "均值回归",
+      "best_single_sharpe": 0.587,
+      "diff": -0.814
+    },
+    {
+      "name": "永赢国证商用卫星通信C",
+      "code": "024195",
+      "sector": "混合/主题",
+      "category": "B",
+      "selected_strategy": "v73",
+      "adaptive_sharpe": 2.851,
+      "adaptive_return": 23.77,
+      "best_single_name": "v7.3策略",
+      "best_single_sharpe": 2.851,
+      "diff": 0.0
+    },
+    {
+      "name": "广发中证传媒ETF联接C",
+      "code": "004753",
+      "sector": "消费/传媒",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 0.26,
+      "adaptive_return": 8.14,
+      "best_single_name": "均值回归",
+      "best_single_sharpe": 1.68,
+      "diff": -1.42
+    },
+    {
+      "name": "广发远见智选混合C",
+      "code": "016874",
+      "sector": "混合/主题",
+      "category": "A",
+      "selected_strategy": "mean_reversion",
+      "adaptive_sharpe": 2.352,
+      "adaptive_return": 44.09,
+      "best_single_name": "均值回归",
+      "best_single_sharpe": 2.352,
+      "diff": 0.0
+    },
+    {
+      "name": "嘉实清洁能源股票C",
+      "code": "017074",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 1.448,
+      "adaptive_return": 59.44,
+      "best_single_name": "均值回归",
+      "best_single_sharpe": 1.532,
+      "diff": -0.08400000000000007
+    },
+    {
+      "name": "南方有色金属ETF联接E",
+      "code": "010990",
+      "sector": "有色/稀土",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 1.514,
+      "adaptive_return": 65.73,
+      "best_single_name": "趋势猎手",
+      "best_single_sharpe": 1.514,
+      "diff": 0.0
+    },
+    {
+      "name": "南方中证新能源ETF联接C",
+      "code": "012832",
+      "sector": "新能源/光伏",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 0.903,
+      "adaptive_return": 29.02,
+      "best_single_name": "v7.3策略",
+      "best_single_sharpe": 1.196,
+      "diff": -0.2929999999999999
+    },
+    {
+      "name": "嘉实中证稀土产业ETF联接C",
+      "code": "011036",
+      "sector": "有色/稀土",
+      "category": "C",
+      "selected_strategy": "v73",
+      "adaptive_sharpe": 0.943,
+      "adaptive_return": 34.17,
+      "best_single_name": "v7.3策略",
+      "best_single_sharpe": 1.26,
+      "diff": -0.31700000000000006
+    },
+    {
+      "name": "华夏国证半导体芯片ETF联接C",
+      "code": "008888",
+      "sector": "半导体/芯片",
+      "category": "C",
+      "selected_strategy": "trend_hunter",
+      "adaptive_sharpe": 0.474,
+      "adaptive_return": 16.71,
+      "best_single_name": "动量守门员",
+      "best_single_sharpe": 1.39,
+      "diff": -0.9159999999999999
+    }
+  ],
+  "strategy_summary": {
+    "自适应选择器": {
+      "avg_sharpe": 1.2235238095238095,
+      "avg_return": 32.91619047619048,
+      "avg_mdd": -12.445714285714287,
+      "avg_calmar": 2.8000000000000007,
+      "avg_wr": 42.91428571428571
+    },
+    "动量守门员": {
+      "avg_sharpe": 1.1995714285714287,
+      "avg_return": 19.15714285714286,
+      "avg_mdd": -6.09904761904762,
+      "avg_calmar": 2.5164761904761908,
+      "avg_wr": 41.604761904761894
+    },
+    "趋势猎手": {
+      "avg_sharpe": 0.9264761904761905,
+      "avg_return": 34.86952380952382,
+      "avg_mdd": -17.214761904761904,
+      "avg_calmar": 1.4526666666666666,
+      "avg_wr": 41.733333333333334
+    },
+    "双模型投票": {
+      "avg_sharpe": 1.3083333333333333,
+      "avg_return": 21.16333333333333,
+      "avg_mdd": -6.546666666666668,
+      "avg_calmar": 2.70752380952381,
+      "avg_wr": 42.20476190476192
+    },
+    "均值回归": {
+      "avg_sharpe": 0.5952857142857143,
+      "avg_return": 14.722380952380954,
+      "avg_mdd": -7.970000000000001,
+      "avg_calmar": 1.5181904761904763,
+      "avg_wr": 36.74761904761905
+    },
+    "v7.3策略": {
+      "avg_sharpe": 1.2664761904761908,
+      "avg_return": 26.962857142857143,
+      "avg_mdd": -8.786666666666665,
+      "avg_calmar": 2.7630952380952385,
+      "avg_wr": 42.81428571428571
+    }
+  },
+  "summary": {
+    "total_funds": 21,
+    "adaptive_wins": 10,
+    "adaptive_close": 1,
+    "adaptive_lose": 10,
+    "win_rate": 47.6
+  }
+}

@@ -535,10 +535,10 @@ export default function FundDetail() {
 
     try {
       const payload: any = { fund_id: fundId, date: form.date, type: form.type, asset, shares: submitShares, price: submitPrice, notes: form.notes }
+      payload.affect_gain = form.affect_gain
       if (editId) {
         await api.updateTransaction(editId, payload)
       } else {
-        payload.affect_gain = form.affect_gain
         await api.createTransaction(payload)
       }
       setShowForm(false)
@@ -551,7 +551,7 @@ export default function FundDetail() {
   }
 
   const startEdit = (tx: Transaction) => {
-    setForm({ fund_id: fundId, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '', inputMode: 'shares', inputValue: tx.type === 'dividend' ? tx.price : tx.shares })
+    setForm({ fund_id: fundId, date: tx.date, type: tx.type, asset: tx.asset, shares: tx.shares, price: tx.price, notes: tx.notes || '', inputMode: 'shares', inputValue: tx.type === 'dividend' ? tx.price : tx.shares, affect_gain: true })
     setEditId(tx.id)
     setShowForm(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -2016,13 +2016,11 @@ export default function FundDetail() {
               <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="添加备注..." className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
             </div>
           </div>
-          {!editId && (
-            <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
-              <input type="checkbox" checked={form.affect_gain} onChange={e => setForm({ ...form, affect_gain: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-              <span className="text-sm text-gray-600">影响持仓收益</span>
-              <span className="text-xs text-gray-400">{form.affect_gain ? '（份额会变化）' : '（自动调整历史持仓, 份额不变）'}</span>
-            </label>
-          )}
+          <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+            <input type="checkbox" checked={form.affect_gain} onChange={e => setForm({ ...form, affect_gain: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+            <span className="text-sm text-gray-600">影响持仓收益</span>
+            <span className="text-xs text-gray-400">{form.affect_gain ? '（份额会变化）' : '（自动调整历史持仓, 份额不变）'}</span>
+          </label>
           <div className="flex gap-3 pt-2">
             <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium shadow-sm transition-colors">
               {editId ? '更新' : '添加'}交易

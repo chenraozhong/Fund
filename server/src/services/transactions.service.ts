@@ -133,6 +133,7 @@ export function batchCreateTransactions(transactions: any[]) {
 
 export function updateTransaction(id: number | string, data: {
   fund_id?: number; date?: string; type?: string; asset?: string; shares?: number; price?: number; notes?: string;
+  affect_gain?: boolean;
 }) {
   const { fund_id, date, type, asset, shares, price, notes } = data;
   db.prepare(`
