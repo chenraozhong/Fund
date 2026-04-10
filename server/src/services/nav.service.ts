@@ -29,7 +29,7 @@ export async function refreshAllNav() {
     try {
       const official = await fetchOfficialNav(f.code);
       if (official && official.nav > 0) {
-        db.prepare('UPDATE funds SET market_nav = ? WHERE id = ?').run(official.nav, f.id);
+        db.prepare('UPDATE funds SET market_nav = ?, prev_nav = ? WHERE id = ?').run(official.nav, official.prevNav || 0, f.id);
         results.push({ id: f.id, name: f.name, code: f.code, nav: official.nav, date: official.date, source: 'official' });
         continue;
       }
@@ -41,10 +41,11 @@ export async function refreshAllNav() {
         const data = JSON.parse(json);
         const nav = parseFloat(data.dwjz);
         if (nav > 0) {
+          const prevNav = official?.prevNav || parseFloat(data.dwjz) || 0;
           if (data.name) {
-            db.prepare('UPDATE funds SET market_nav = ?, name = ? WHERE id = ?').run(nav, data.name, f.id);
+            db.prepare('UPDATE funds SET market_nav = ?, prev_nav = ?, name = ? WHERE id = ?').run(nav, prevNav, data.name, f.id);
           } else {
-            db.prepare('UPDATE funds SET market_nav = ? WHERE id = ?').run(nav, f.id);
+            db.prepare('UPDATE funds SET market_nav = ?, prev_nav = ? WHERE id = ?').run(nav, prevNav, f.id);
           }
           results.push({ id: f.id, name: data.name || f.name, code: f.code, nav, date: data.jzrq, source: 'estimate_dwjz' });
           continue;

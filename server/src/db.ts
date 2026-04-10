@@ -170,6 +170,10 @@ const migrations = [
   "ALTER TABLE funds ADD COLUMN cumulative_gain REAL DEFAULT 0",
   // daily_snapshots: 当日收益
   "ALTER TABLE daily_snapshots ADD COLUMN daily_gain REAL DEFAULT 0",
+  // funds: 官方前日净值(用于当日收益计算, 与前端API一致)
+  "ALTER TABLE funds ADD COLUMN prev_nav REAL DEFAULT 0",
+  // daily_snapshots: 存储当日使用的prev_nav(历史记录)
+  "ALTER TABLE daily_snapshots ADD COLUMN prev_nav REAL DEFAULT 0",
 ];
 for (const sql of migrations) {
   try { rawDb.exec(sql); } catch (_) { /* column/index already exists */ }

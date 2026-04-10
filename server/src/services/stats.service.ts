@@ -91,8 +91,10 @@ export function getAllocation() {
 
 export function recordDailySnapshots() {
   const today = new Date().toISOString().slice(0, 10);
+
+  // 1. 获取所有基金数据(含官方prev_nav)
   const funds = db.prepare(`
-    SELECT f.id, f.market_nav, f.cumulative_gain,
+    SELECT f.id, f.market_nav, f.prev_nav, f.cumulative_gain,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
         - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0) as total_buy_shares,
@@ -103,7 +105,7 @@ export function recordDailySnapshots() {
     GROUP BY f.id
   `).all() as any[];
 
-  // 计算每只基金今日交易的买卖份额(用于反推日初份额)
+  // 2. 今日交易(用于反推日初份额)
   const todayTxs = db.prepare(`
     SELECT fund_id,
       COALESCE(SUM(CASE WHEN type = 'buy' THEN shares ELSE 0 END), 0) as today_bought,
@@ -113,15 +115,15 @@ export function recordDailySnapshots() {
   const todayMap = new Map<number, { bought: number; sold: number }>();
   for (const t of todayTxs) todayMap.set(t.fund_id, { bought: t.today_bought, sold: t.today_sold });
 
-  // 获取昨日快照的NAV(用于净值差计算)
+  // 3. fallback: 每只基金各自的最近快照NAV(当funds.prev_nav为0时使用)
   const prevSnaps = db.prepare(`
-    SELECT fund_id, market_nav FROM daily_snapshots
-    WHERE date = (SELECT MAX(date) FROM daily_snapshots WHERE date < ?)
+    SELECT ds.fund_id, ds.market_nav FROM daily_snapshots ds
+    WHERE ds.date = (SELECT MAX(date) FROM daily_snapshots WHERE fund_id = ds.fund_id AND date < ?)
   `).all(today) as any[];
-  const prevNavMap = new Map<number, number>();
-  for (const s of prevSnaps) prevNavMap.set(s.fund_id, s.market_nav);
+  const prevSnapNavMap = new Map<number, number>();
+  for (const s of prevSnaps) prevSnapNavMap.set(s.fund_id, s.market_nav);
 
-  // 获取今日已有快照的daily_gain(用于幂等更新: 先减旧值再加新值)
+  // 4. 今日已有快照的daily_gain(幂等: 先减旧值再加新值)
   const existingSnaps = db.prepare(`
     SELECT fund_id, daily_gain FROM daily_snapshots WHERE date = ?
   `).all(today) as any[];
@@ -129,11 +131,14 @@ export function recordDailySnapshots() {
   for (const s of existingSnaps) existingGainMap.set(s.fund_id, s.daily_gain || 0);
 
   const insert = db.prepare(`
-    INSERT OR REPLACE INTO daily_snapshots (fund_id, date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct, daily_gain)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO daily_snapshots (fund_id, date, holding_shares, total_cost, market_value, cost_nav, market_nav, gain, gain_pct, daily_gain, prev_nav)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateFundGain = db.prepare(`UPDATE funds SET cumulative_gain = ? WHERE id = ?`);
-  const updatePrevSnapshot = db.prepare(`UPDATE daily_snapshots SET holding_shares = ? WHERE fund_id = ? AND date = (SELECT MAX(date) FROM daily_snapshots WHERE fund_id = ? AND date < ?)`);
+  const updatePrevSnapshot = db.prepare(`
+    UPDATE daily_snapshots SET holding_shares = ?
+    WHERE fund_id = ? AND date = (SELECT MAX(date) FROM daily_snapshots WHERE fund_id = ? AND date < ?)
+  `);
 
   db.transaction(() => {
     for (const f of funds) {
@@ -144,18 +149,19 @@ export function recordDailySnapshots() {
       const holdingCost = holdingShares > 0 ? holdingShares * avgBuyPrice : 0;
       const costNav = holdingCost > 0 ? holdingCost / holdingShares : 0;
 
-      // 日初份额 = 当前持仓 - 今日买入 + 今日卖出 (从交易实时反推)
+      // 日初份额 = 当前持仓 - 今日买入 + 今日卖出
       const todayTx = todayMap.get(f.id);
       const startOfDayShares = holdingShares - (todayTx?.bought || 0) + (todayTx?.sold || 0);
 
-      const prevNav = prevNavMap.get(f.id) || 0;
+      // prevNav: 优先用官方API的prev_nav, fallback到快照
+      const prevNav = (f.prev_nav && f.prev_nav > 0) ? f.prev_nav : (prevSnapNavMap.get(f.id) || 0);
 
       let dailyGain = 0;
       if (startOfDayShares > 0 && mNav > 0 && prevNav > 0) {
         dailyGain = Math.round(startOfDayShares * (mNav - prevNav) * 100) / 100;
       }
 
-      // 幂等更新累计收益: 减去旧的daily_gain, 加上新的daily_gain
+      // 幂等累计收益: 减旧daily_gain + 加新daily_gain
       const oldDailyGain = existingGainMap.get(f.id) ?? 0;
       const cumulativeGain = Math.round(((f.cumulative_gain || 0) - oldDailyGain + dailyGain) * 100) / 100;
       updateFundGain.run(cumulativeGain, f.id);
@@ -165,9 +171,9 @@ export function recordDailySnapshots() {
       insert.run(f.id, today, holdingShares, Math.round(holdingCost * 100) / 100,
         Math.round(marketValue * 100) / 100, Math.round(costNav * 10000) / 10000,
         mNav, Math.round(cumulativeGain * 100) / 100, Math.round(gainPct * 100) / 100,
-        dailyGain);
+        dailyGain, prevNav);
 
-      // 同步更新昨日快照的holding_shares
+      // 同步更新昨日快照的holding_shares(反映补录交易)
       updatePrevSnapshot.run(startOfDayShares, f.id, f.id, today);
     }
   })();

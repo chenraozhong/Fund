@@ -1,4 +1,5 @@
 import db from '../db';
+import { recordDailySnapshots } from './stats.service';
 
 export function listTransactions(query: { fundId?: string; type?: string; from?: string; to?: string }) {
   let sql = `
@@ -50,8 +51,10 @@ function adjustBaseForHistorical(fund_id: number | string, type: string, shares:
 
 export function createTransaction(data: {
   fund_id: number; date: string; type: string; asset?: string; shares?: number; price?: number; notes?: string;
+  affect_gain?: boolean;
 }) {
   let { fund_id, date, type, asset, shares, price, notes } = data;
+  const affectGain = data.affect_gain !== false; // 默认true: 影响收益计算
   if (!fund_id || !date || !type) throw { status: 400, error: 'fund_id, date, type are required' };
 
   if (!asset) {
@@ -68,18 +71,20 @@ export function createTransaction(data: {
       'INSERT INTO transactions (fund_id, date, type, asset, shares, price, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).run(fund_id, date, type, asset, shares || 0, price || 0, notes || null);
 
-    if (isHistorical) {
+    if (isHistorical && !affectGain) {
       adjustBaseForHistorical(fund_id, type, shares || 0, price || 0);
     }
 
     return ins.lastInsertRowid;
   })();
 
-  return db.prepare(`
+  const tx = db.prepare(`
     SELECT t.*, f.name as fund_name, f.color as fund_color
     FROM transactions t JOIN funds f ON f.id = t.fund_id
     WHERE t.id = ?
   `).get(result);
+  try { recordDailySnapshots(); } catch { /* ignore */ }
+  return tx;
 }
 
 export function batchCreateTransactions(transactions: any[]) {
@@ -148,12 +153,14 @@ export function updateTransaction(id: number | string, data: {
     WHERE t.id = ?
   `).get(id);
   if (!tx) throw { status: 404, error: 'Transaction not found' };
+  try { recordDailySnapshots(); } catch { /* ignore */ }
   return tx;
 }
 
 export function deleteTransaction(id: number | string) {
   const result = db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
   if (result.changes === 0) throw { status: 404, error: 'Transaction not found' };
+  try { recordDailySnapshots(); } catch { /* ignore */ }
   return { success: true };
 }
 

@@ -295,6 +295,8 @@ export async function createSqlJsDb(
     "ALTER TABLE transactions ADD COLUMN paired_shares REAL DEFAULT 0",
     "ALTER TABLE funds ADD COLUMN cumulative_gain REAL DEFAULT 0",
     "ALTER TABLE daily_snapshots ADD COLUMN daily_gain REAL DEFAULT 0",
+    "ALTER TABLE funds ADD COLUMN prev_nav REAL DEFAULT 0",
+    "ALTER TABLE daily_snapshots ADD COLUMN prev_nav REAL DEFAULT 0",
   ];
   for (const sql of migrations) {
     try { adapter.exec(sql); } catch (_) { /* column/index already exists */ }
