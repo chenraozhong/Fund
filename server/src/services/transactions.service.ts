@@ -1,6 +1,10 @@
 import db from '../db';
 import { recordDailySnapshots } from './stats.service';
 
+function getChinaToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+}
+
 export function listTransactions(query: { fundId?: string; type?: string; from?: string; to?: string }) {
   let sql = `
     SELECT t.*, f.name as fund_name, f.color as fund_color
@@ -63,7 +67,7 @@ export function createTransaction(data: {
     asset = fundRow.name;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getChinaToday();
   const isHistorical = date < today;
 
   const result = db.transaction(() => {
@@ -92,7 +96,7 @@ export function batchCreateTransactions(transactions: any[]) {
     throw { status: 400, error: '请提供交易列表' };
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getChinaToday();
   const results: any[] = [];
   const errors: { index: number; error: string }[] = [];
 

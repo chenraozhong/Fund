@@ -29,7 +29,7 @@ export async function refreshAllNav() {
     try {
       const official = await fetchOfficialNav(f.code);
       if (official && official.nav > 0) {
-        db.prepare('UPDATE funds SET market_nav = ?, prev_nav = ? WHERE id = ?').run(official.nav, official.prevNav || 0, f.id);
+        db.prepare('UPDATE funds SET market_nav = ?, prev_nav = ?, nav_date = ? WHERE id = ?').run(official.nav, official.prevNav || 0, official.date || '', f.id);
         results.push({ id: f.id, name: f.name, code: f.code, nav: official.nav, date: official.date, source: 'official' });
         continue;
       }

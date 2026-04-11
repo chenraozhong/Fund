@@ -89,12 +89,16 @@ export function getAllocation() {
   }));
 }
 
-export function recordDailySnapshots() {
-  const today = new Date().toISOString().slice(0, 10);
+function getChinaToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+}
 
-  // 1. 获取所有基金数据(含官方prev_nav)
+export function recordDailySnapshots() {
+  const today = getChinaToday();
+
+  // 1. 获取所有基金数据(含官方prev_nav和nav_date)
   const funds = db.prepare(`
-    SELECT f.id, f.market_nav, f.prev_nav, f.cumulative_gain,
+    SELECT f.id, f.market_nav, f.prev_nav, f.cumulative_gain, f.nav_date,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0)
         - COALESCE(SUM(CASE WHEN t.type = 'sell' THEN t.shares ELSE 0 END), 0) as holding_shares,
       COALESCE(SUM(CASE WHEN t.type = 'buy' THEN t.shares ELSE 0 END), 0) as total_buy_shares,
@@ -117,15 +121,12 @@ export function recordDailySnapshots() {
   const existingGainMap = new Map<number, number>();
   for (const s of existingSnaps) existingGainMap.set(s.fund_id, s.daily_gain || 0);
 
-  // 4. 检测是否为新交易日: market_nav != prev_nav 说明有新NAV发布
-  const isNewTradingDay = funds.some((f: any) =>
-    f.market_nav > 0 && f.prev_nav > 0 && Math.abs(f.market_nav - f.prev_nav) > 0.0001
-  );
+  // 4. 检测是否为交易日: nav_date == today 说明今天有新NAV发布
+  // nav_date是refreshAllNav从API获取的最新净值日期
+  const isNewTradingDay = funds.some((f: any) => f.nav_date === today);
 
-  // 非交易日(周末/假日): 只更新持仓快照, 不计算daily_gain, 不动cumulative_gain
-  // 已有今日快照时也需要更新(幂等重算)
-  if (!isNewTradingDay && existingGainMap.size === 0) {
-    // 非交易日首次: 只更新昨日快照的holding_shares(反映补录交易)
+  // 非交易日(周末/假日): 只更新昨日快照holding_shares(反映补录交易), 不录新快照
+  if (!isNewTradingDay) {
     const updatePrev = db.prepare(`
       UPDATE daily_snapshots SET holding_shares = ?
       WHERE fund_id = ? AND date = (SELECT MAX(date) FROM daily_snapshots WHERE fund_id = ? AND date < ?)
@@ -184,9 +185,8 @@ export function recordDailySnapshots() {
       // prevNav: 优先用官方API的prev_nav, fallback到快照
       const prevNav = (f.prev_nav && f.prev_nav > 0) ? f.prev_nav : (prevSnapNavMap.get(f.id) || 0);
 
-      // 非交易日(该基金NAV未变): daily_gain=0
       let dailyGain = 0;
-      if (startOfDayShares > 0 && mNav > 0 && prevNav > 0 && Math.abs(mNav - prevNav) > 0.0001) {
+      if (startOfDayShares > 0 && mNav > 0 && prevNav > 0) {
         dailyGain = Math.round(startOfDayShares * (mNav - prevNav) * 100) / 100;
       }
 

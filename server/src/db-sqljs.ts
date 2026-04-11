@@ -296,6 +296,7 @@ export async function createSqlJsDb(
     "ALTER TABLE funds ADD COLUMN cumulative_gain REAL DEFAULT 0",
     "ALTER TABLE daily_snapshots ADD COLUMN daily_gain REAL DEFAULT 0",
     "ALTER TABLE funds ADD COLUMN prev_nav REAL DEFAULT 0",
+    "ALTER TABLE funds ADD COLUMN nav_date TEXT DEFAULT ''",
     "ALTER TABLE daily_snapshots ADD COLUMN prev_nav REAL DEFAULT 0",
   ];
   for (const sql of migrations) {
