@@ -701,19 +701,26 @@ export default function FundDetail() {
         const officialNav = latestNavInfo?.nav || 0;
         const estNav = latestNavInfo?.estimatedNav && latestNavInfo.estimatedNav > 0 ? latestNavInfo.estimatedNav : 0;
 
-        // 今日净值已出 → 用官方净值，不再看估值；否则用估值
-        const currentNav = officialIsToday ? officialNav : estNav;
+        // 判断是否交易日: 最新官方NAV日期 == 今天
+        const isTradingDay = officialIsToday;
+        // 今日净值已出 → 用官方净值；盘中 → 用估值；非交易日 → 用最近官方净值
+        const currentNav = officialIsToday ? officialNav : (estNav > 0 ? estNav : officialNav);
         const isEstimate = !officialIsToday && estNav > 0;
+        // 非交易日且无估值: 显示最近交易日(official)的收益
+        const showingLastTradingDay = !isTradingDay && estNav <= 0;
 
-        // 日初持仓 = 昨日快照的holding_shares(最可靠, 不受配对/当日交易影响)
+        // 日初持仓
+        const navDate = latestNavInfo?.date || todayStr;
         const lastSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
         const prevSnapshotDate = lastSnapshot?.date || '';
-        // 快照是昨天或更早的 → 用快照份额; 快照是今天的 → 需要反推
         let startOfDayShares = holdingShares;
-        if (lastSnapshot && prevSnapshotDate < todayStr) {
+        if (showingLastTradingDay) {
+          // 非交易日: 用最近交易日的快照数据, 找navDate之前的快照
+          const prevSnap = snapshots.filter(s => s.date < navDate).pop();
+          startOfDayShares = prevSnap?.holding_shares ?? holdingShares;
+        } else if (lastSnapshot && prevSnapshotDate < todayStr) {
           startOfDayShares = lastSnapshot.holding_shares;
         } else {
-          // fallback: 从交易反推
           let todayBought = 0, todaySold = 0;
           for (const tx of transactions) {
             if (tx.date === todayStr) {
@@ -782,7 +789,7 @@ export default function FundDetail() {
             ? dailyGain >= 0 ? 'bg-red-50/50 border-red-200' : 'bg-green-50/50 border-green-200'
             : 'bg-white border-gray-200'
         }`}>
-          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">当日收益</div>
+          <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">{showingLastTradingDay ? `${navDate} 收益` : '当日收益'}</div>
           {dailyGain !== null ? (
             <>
               <div className={`text-xl font-bold ${dailyGain >= 0 ? 'text-red-600' : 'text-green-600'}`}>
