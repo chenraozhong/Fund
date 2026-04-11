@@ -154,7 +154,85 @@ c -X DELETE "$BASE/transactions/$BID" > /dev/null
 c -X DELETE "$BASE/transactions/$SID" > /dev/null
 c -X DELETE "$BASE/transactions/$SID2" > /dev/null
 
-echo -e "\n${Y}=== 5. 基金接口 ===${N}"
+echo -e "\n${Y}=== 5. 交易拆分/合并/批量 ===${N}"
+
+# 5a.1 拆分交易
+echo "--- 5a.1 拆分 ---"
+SP_ID=$(c -X POST "$BASE/transactions" -H "Content-Type: application/json" \
+  -d "{\"fund_id\":$TF,\"date\":\"2026-04-01\",\"type\":\"buy\",\"shares\":500,\"price\":2.0,\"notes\":\"split_test\",\"affect_gain\":true}" | jv "['id']")
+SP_RES=$(c -X POST "$BASE/transactions/$SP_ID/split" -H "Content-Type: application/json" -d '{"shares":200}')
+SP_ORIG=$(echo "$SP_RES" | python3 -c "import sys,json;print(json.load(sys.stdin)['original']['shares'])" 2>/dev/null)
+SP_NEW=$(echo "$SP_RES" | python3 -c "import sys,json;print(json.load(sys.stdin)['split']['shares'])" 2>/dev/null)
+assert_eq "5a.1a 原始=300" "300" "$SP_ORIG"
+assert_eq "5a.1b 拆分=200" "200" "$SP_NEW"
+SP_NEW_ID=$(echo "$SP_RES" | jv "['split']['id']")
+
+# 5a.2 合并交易
+echo "--- 5a.2 合并 ---"
+MG_RES=$(c -X POST "$BASE/transactions/merge" -H "Content-Type: application/json" \
+  -d "{\"ids\":[$SP_ID,$SP_NEW_ID]}")
+MG_SHARES=$(echo "$MG_RES" | python3 -c "import sys,json;print(json.load(sys.stdin)['shares'])" 2>/dev/null)
+assert_eq "5a.2 合并=500" "500" "$MG_SHARES"
+MG_ID=$(echo "$MG_RES" | jv "['id']")
+c -X DELETE "$BASE/transactions/$MG_ID" > /dev/null
+
+# 5a.3 批量创建
+echo "--- 5a.3 批量 ---"
+BA_RES=$(c -X POST "$BASE/transactions/batch" -H "Content-Type: application/json" \
+  -d "{\"transactions\":[{\"fund_id\":$TF,\"date\":\"2026-04-01\",\"type\":\"buy\",\"shares\":100,\"price\":2.0},{\"fund_id\":$TF,\"date\":\"2026-04-02\",\"type\":\"buy\",\"shares\":200,\"price\":2.1}]}")
+BA_CNT=$(echo "$BA_RES" | jv "['created']")
+assert_eq "5a.3 批量创建2笔" "2" "$BA_CNT"
+# 清理
+BA_IDS=$(echo "$BA_RES" | python3 -c "import sys,json;d=json.load(sys.stdin);[print(t['id']) for t in d['transactions']]" 2>/dev/null)
+for bid in $BA_IDS; do c -X DELETE "$BASE/transactions/$bid" > /dev/null; done
+# 还原adjustBase (batch买入300份 → base减了300)
+sqlite3 "$DB" "UPDATE transactions SET shares=shares+300 WHERE fund_id=$TF AND notes LIKE '%历史%';"
+
+echo -e "\n${Y}=== 5b. 基金CRUD生命周期 ===${N}"
+
+# 5b.1 创建基金
+echo "--- 5b.1 创建 ---"
+NF_RES=$(c -X POST "$BASE/funds" -H "Content-Type: application/json" \
+  -d '{"name":"测试基金","code":"999999"}')
+NF_ID=$(echo "$NF_RES" | jv "['id']")
+assert_ne "5b.1 创建基金ID" "" "$NF_ID"
+
+# 5b.2 软删除
+echo "--- 5b.2 软删除 ---"
+c -X DELETE "$BASE/funds/$NF_ID" > /dev/null
+TR_LIST=$(c "$BASE/funds/trash/list")
+assert_has "5b.2 回收站有记录" "测试基金" "$TR_LIST"
+
+# 5b.3 恢复
+echo "--- 5b.3 恢复 ---"
+c -X POST "$BASE/funds/trash/$NF_ID/restore" > /dev/null
+TR_LIST2=$(c "$BASE/funds/trash/list")
+# 恢复后回收站应该没有了
+NF_IN_TRASH=$(echo "$TR_LIST2" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len([f for f in d if f.get('id')==$NF_ID]))" 2>/dev/null || echo "0")
+assert_eq "5b.3 恢复后回收站无记录" "0" "$NF_IN_TRASH"
+
+# 5b.4 永久删除
+echo "--- 5b.4 永久删除 ---"
+c -X DELETE "$BASE/funds/$NF_ID" > /dev/null
+c -X DELETE "$BASE/funds/trash/$NF_ID/permanent" > /dev/null
+NF_EXISTS=$(sqlite3 "$DB" "SELECT COUNT(*) FROM funds WHERE id=$NF_ID;")
+assert_eq "5b.4 永久删除" "0" "$NF_EXISTS"
+
+echo -e "\n${Y}=== 5c. adjustHolding ===${N}"
+echo "--- 5c.1 transaction模式 ---"
+AH_BEFORE=$(holding $TF)
+c -X POST "$BASE/funds/$TF/adjust" -H "Content-Type: application/json" \
+  -d "{\"target_shares\":$(python3 -c "print($AH_BEFORE+100)"),\"target_nav\":2.0}" > /dev/null
+AH_AFTER=$(holding $TF)
+AH_DIFF=$(python3 -c "print(round($AH_AFTER-$AH_BEFORE,2))")
+assert_eq "5c.1 adjustHolding+100" "100.0" "$AH_DIFF"
+# 还原: 反向adjust回原始份额
+c -X POST "$BASE/funds/$TF/adjust" -H "Content-Type: application/json" \
+  -d "{\"target_shares\":$AH_BEFORE,\"target_nav\":2.0}" > /dev/null
+AH_RESTORE=$(holding $TF)
+assert_eq "5c.2 adjustHolding还原" "$AH_BEFORE" "$AH_RESTORE"
+
+echo -e "\n${Y}=== 6. 基金接口 ===${N}"
 FC=$(c "$BASE/funds" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
 assert_ne "5.1 基金列表数>0" "0" "$FC"
 
@@ -167,21 +245,33 @@ NS=$(sqlite3 "$DB" "SELECT stop_profit_pct FROM funds WHERE id=$TF;")
 assert_eq "5.3 编辑基金" "99.0" "$NS"
 c -X PUT "$BASE/funds/$TF" -H "Content-Type: application/json" -d "{\"stop_profit_pct\":$OS}" > /dev/null
 
-echo -e "\n${Y}=== 6. 统计接口 ===${N}"
+echo -e "\n${Y}=== 6. 统计与快照 ===${N}"
 assert_has "6.1 summary" "total_value" "$(c "$BASE/stats/summary")"
 assert_has "6.2 allocation" "name" "$(c "$BASE/stats/allocation")"
 assert_has "6.3 performance" "month" "$(c "$BASE/stats/performance")"
+assert_has "6.4 snapshots" "date" "$(c "$BASE/stats/snapshots/$TF")"
+assert_has "6.5 snapshots-all" "date" "$(c "$BASE/stats/snapshots-all")"
+assert_has "6.6 cost-nav" "fund_id" "$(c "$BASE/stats/cost-nav-changes")"
+assert_has "6.7 short-term" "total" "$(c "$BASE/stats/short-term-profit")"
+assert_has "6.8 snapshot触发" "success" "$(c -X POST "$BASE/stats/snapshot")"
 
 echo -e "\n${Y}=== 7. NAV接口 ===${N}"
 assert_has "7.1 latest" "nav" "$(c "$BASE/nav/025209/latest")"
 assert_has "7.2 byDate" "nav" "$(c "$BASE/nav/025209/date/2026-04-10")"
 assert_has "7.3 estimateAll" "gsz" "$(c "$BASE/nav/estimate/all")"
+assert_has "7.4 history" "nav" "$(c "$BASE/nav/025209/history?start=2026-04-01&end=2026-04-10")"
 
-echo -e "\n${Y}=== 8. 错误处理 ===${N}"
-assert_has "8.1 不存在基金" "Cannot GET" "$(c "$BASE/funds/99999")"
-assert_has "8.2 不存在交易" "not found" "$(c -X DELETE "$BASE/transactions/99999")"
-assert_has "8.3 不存在配对" "不存在" "$(c -X DELETE "$BASE/trades/99999")"
-assert_has "8.4 空配对" "至少需要" "$(c -X POST "$BASE/trades" -H "Content-Type: application/json" -d '{"buyTxIds":[],"sellTxIds":[]}')"
+echo -e "\n${Y}=== 8. 策略接口 ===${N}"
+assert_has "8.1 models" "label" "$(c "$BASE/strategy/models")"
+assert_has "8.2 decision" "action" "$(c "$BASE/strategy/funds/$TF/decision?nav=2.0")"
+assert_has "8.3 forecast" "prediction" "$(c "$BASE/strategy/funds/$TF/forecast")"
+
+echo -e "\n${Y}=== 9. 错误处理 ===${N}"
+assert_has "9.1 不存在基金" "Cannot GET" "$(c "$BASE/funds/99999")"
+assert_has "9.2 不存在交易" "not found" "$(c -X DELETE "$BASE/transactions/99999")"
+assert_has "9.3 不存在配对" "不存在" "$(c -X DELETE "$BASE/trades/99999")"
+assert_has "9.4 空配对" "至少需要" "$(c -X POST "$BASE/trades" -H "Content-Type: application/json" -d '{"buyTxIds":[],"sellTxIds":[]}')"
+assert_has "9.5 不存在TX配对" "不存在" "$(c -X POST "$BASE/trades" -H "Content-Type: application/json" -d '{"buyTxIds":[999999],"sellTxIds":[999998]}')"
 
 echo -e "\n${Y}=== 清理验证 ===${N}"
 HF=$(holding $TF)
