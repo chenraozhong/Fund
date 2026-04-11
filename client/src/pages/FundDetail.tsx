@@ -703,11 +703,11 @@ export default function FundDetail() {
 
         // 判断是否交易日: 最新官方NAV日期 == 今天
         const isTradingDay = officialIsToday;
-        // 今日净值已出 → 用官方净值；盘中 → 用估值；非交易日 → 用最近官方净值
-        const currentNav = officialIsToday ? officialNav : (estNav > 0 ? estNav : officialNav);
-        const isEstimate = !officialIsToday && estNav > 0;
-        // 非交易日且无估值: 显示最近交易日(official)的收益
-        const showingLastTradingDay = !isTradingDay && estNav <= 0;
+        // 非交易日: 显示最近交易日收益(用官方净值, 不用估值)
+        const showingLastTradingDay = !isTradingDay;
+        // 今日净值已出 → 官方净值；非交易日 → 最近官方净值；盘中 → 估值
+        const currentNav = (officialIsToday || showingLastTradingDay) ? officialNav : (estNav > 0 ? estNav : officialNav);
+        const isEstimate = !officialIsToday && !showingLastTradingDay && estNav > 0;
 
         // 日初持仓
         const navDate = latestNavInfo?.date || todayStr;
